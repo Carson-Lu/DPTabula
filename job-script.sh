@@ -7,6 +7,7 @@
 #SBATCH --gres=gpu:a100:1       # used only for embeddings
 #SBATCH --mail-user=clu56@student.ubc.ca
 #SBATCH --mail-type=ALL
+#SBATCH --account=rrg-mijungp
 
 cd DPTabula
 module purge
