@@ -1,3 +1,4 @@
 py311-tabula/
 __pycache__/
 *.pyc
+.env
