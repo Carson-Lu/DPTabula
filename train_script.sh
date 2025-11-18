@@ -1,24 +1,47 @@
 #!/bin/bash
+#SBATCH --job-name=tabula_test
+#SBATCH --account=rrg-mijungp
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
-#SBATCH --cpus-per-task=4       # enough for data loading
-#SBATCH --mem=32G               # adjust if your dataset is larger
-#SBATCH --time=0:45:00
-#SBATCH --gres=gpu:a100:1       # used only for embeddings
+#SBATCH --cpus-per-task=4
+#SBATCH --mem=32G
+#SBATCH --time=0:10:00
+#SBATCH --gres=gpu:a100:1
 #SBATCH --mail-user=clu56@student.ubc.ca
 #SBATCH --mail-type=ALL
-#SBATCH --account=rrg-mijungp
+#SBATCH --output=/scratch/%u/logs/tabula_test_%j.out
+#SBATCH --error=/scratch/%u/logs/tabula_test_%j.err
 
-cd DPTabula
-module purge
-module load python/3.13 scipy-stack
+set -euo pipefail
 
+# Paths
+REPO_HOME=/home/carson/DPTabula
+MODEL_HOME=/home/carson/scratch/hf_models/tabula-8b
 
-if [ ! -d ~/py313-cc ]; then
-    python -m venv ~/py313-cc
-fi
+# Stage repo and model to local tmp for fast I/O
+TMP_REPO="${SLURM_TMPDIR}/DPTabula"
+TMP_MODEL="${SLURM_TMPDIR}/hf_models/tabula-8b"
 
-source ~/py313-cc/bin/activate
-pip install --no-index -r requirements-cc.txt
+mkdir -p "${TMP_REPO}" "${TMP_MODEL}"
+rsync -a --exclude=".git" "${REPO_HOME}/" "${TMP_REPO}/"
+rsync -a "${MODEL_HOME}/" "${TMP_MODEL}/"
 
-python main.py
+cd "${TMP_REPO}"
+
+# Virtual environment
+TMP_VENV="${SLURM_TMPDIR}/venv"
+python -m venv "${TMP_VENV}"
+source "${TMP_VENV}/bin/activate"
+
+pip install --upgrade pip
+pip install torch transformers --no-cache-dir
+
+# Set Hugging Face caches to tmp for offline use
+export HF_HOME="${SLURM_TMPDIR}/hf_home"
+export HF_DATASETS_CACHE="${SLURM_TMPDIR}/hf_datasets"
+export HF_MODELS_CACHE="${TMP_MODEL}"
+export TRANSFORMERS_CACHE="${TMP_MODEL}"
+mkdir -p "${HF_HOME}" "${HF_DATASETS_CACHE}" "${HF_MODELS_CACHE}"
+
+# Run your main.py
+python main.py --hf_model_path "${TMP_MODEL}"
