@@ -5,6 +5,4 @@
 #SBATCH --mail-user=clu56@student.ubc.ca
 #SBATCH --mail-type=ALL
 
-
-
 python main.py
