@@ -1,4 +1,4 @@
-certifi==2025.11.12
+certifi==2025.10.5+computecanada
 charset_normalizer==3.4.4+computecanada
 filelock==3.20.0+computecanada
 fsspec==2025.10.0+computecanada

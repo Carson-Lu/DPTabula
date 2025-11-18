@@ -8,5 +8,16 @@
 #SBATCH --gpus-per-node=a100:1        # fill the node’s GPUs
 #SBATCH --mem=64G
 
+cd DPTabula
+module purge
+module load python/3.13 scipy-stack
+
+
+if [ ! -d ~/py313-cc ]; then
+    python -m venv ~/py313-cc
+fi
+
+source ~/py313-cc/bin/activate
+pip install --no-index -r requirements-cc.txt
 
 python test_job.py
