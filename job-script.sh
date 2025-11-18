@@ -8,4 +8,5 @@
 #SBATCH --gpus-per-node=a100:1        # fill the node’s GPUs
 #SBATCH --mem=64G
 
+
 python test_job.py
