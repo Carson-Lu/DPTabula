@@ -1,13 +1,12 @@
 #!/bin/bash
 #SBATCH --nodes=1
-#SBATCH --mem-4G
-#SBATCH --time=0:25:00
-#SBATCH --ntasks-per-node=4
+#SBATCH --ntasks=1
+#SBATCH --cpus-per-task=4       # enough for data loading
+#SBATCH --mem=32G               # adjust if your dataset is larger
+#SBATCH --time=0:45:00
+#SBATCH --gres=gpu:a100:1       # used only for embeddings
 #SBATCH --mail-user=clu56@student.ubc.ca
 #SBATCH --mail-type=ALL
-#SBATCH --cpus-per-task=8             # match dataloader workers
-#SBATCH --gpus-per-node=a100:1        # fill the node’s GPUs
-#SBATCH --mem=64G
 
 cd DPTabula
 module purge
