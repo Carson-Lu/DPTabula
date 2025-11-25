@@ -34,13 +34,15 @@ print("Loading dataset...")
 df = pd.read_csv(data_file)
 X = df.drop(columns=[df.columns[-1]])  # assume target is last column
 y = df[df.columns[-1]]
+y = pd.Categorical(y).codes
 print(f"Dataset shape: X={X.shape}, y={y.shape}")
 
 # Split train/test
 print("Splitting dataset into train and test sets...")
 X_train, X_test, y_train, y_test = train_test_split(
-    X, y, test_size=0.2, random_state=42
+    X, y, test_size=0.2, random_state=42, stratify=y
 )
+
 print(f"Training samples: {len(X_train)}, Test samples: {len(X_test)}")
 
 # ----- Load Tabula-8B model -----
@@ -78,23 +80,30 @@ X_test_emb = [embed_row(row) for _, row in X_test.iterrows()]
 
 # ----- Train linear classifier -----
 print("Training logistic regression...")
-clf = LogisticRegression(max_iter=10000)
+clf = LogisticRegression(max_iter=5000)
 clf.fit(X_train_emb, y_train)
 
-# ----- Evaluate -----
-print("Evaluating model...")
+# Predictions
 y_pred = clf.predict(X_test_emb)
-y_prob = clf.predict_proba(X_test_emb)[:, 1]
-
 acc = accuracy_score(y_test, y_pred)
-auc = roc_auc_score(y_test, y_prob)
 
-print(f"Accuracy: {acc:.4f}")
-print(f"AUC: {auc:.4f}")
+# AUC (only if probabilities available)
+try:
+    y_prob = clf.predict_proba(X_test_emb)
+    if len(np.unique(y)) == 2:
+        auc = roc_auc_score(y_test, y_prob[:, 1])
+    else:
+        auc = roc_auc_score(y_test, y_prob, multi_class="ovr")
+except Exception:
+    auc = float("nan")
+
+dataset_name = os.path.basename(data_file)
+print(f"{dataset_name}: accuracy={acc:.4f}, auc={auc:.4f}")
+
 
 # ----- Save results -----
 with open(output_file, "w") as f:
-    f.write(f"Accuracy: {acc:.4f}\nAUC: {auc:.4f}\n")
+    f.write(f"{dataset_name}: accuracy={acc:.4f}, auc={auc:.4f}\n")
 
 print("Results saved to:", output_file)
 print("tabula_linear_test.py finished successfully.")

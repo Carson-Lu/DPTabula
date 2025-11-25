@@ -20,15 +20,13 @@ from transformers import AutoModel, AutoTokenizer
 # -------------------------------------------------
 # Parse args
 # -------------------------------------------------
-parser = argparse.ArgumentParser(description="Tabula-8B embedding classifier for multiple datasets")
-parser.add_argument("--data_dir", type=str, required=True, help="Directory containing multiple CSVs")
-parser.add_argument("--model_path", type=str, required=True, help="Path to Tabula-8B model")
-parser.add_argument("--results_path", type=str, required=True, help="Path to write results output CSV")
+parser = argparse.ArgumentParser(description="Baseline logistic regression on raw tabular data")
+parser.add_argument("--data_path", type=str, required=True, help="Path to CSV dataset")
+parser.add_argument("--results_path", type=str, required=True, help="Path to save results.txt")
 args = parser.parse_args()
 
 data_dir = args.data_dir
 model_path = args.model_path
-results_path = args.results_path
 
 # -------------------------------------------------
 # Seed
@@ -36,26 +34,6 @@ results_path = args.results_path
 seed = 42
 torch.manual_seed(seed)
 np.random.seed(seed)
-
-# -------------------------------------------------
-# Load Tabula model + tokenizer
-# -------------------------------------------------
-device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-print(f"Using device: {device}")
-
-tokenizer = AutoTokenizer.from_pretrained(model_path, local_files_only=True, trust_remote_code=True)
-model = AutoModel.from_pretrained(model_path, local_files_only=True, trust_remote_code=True).to(device)
-model.eval()
-
-# -------------------------------------------------
-# Embedding function
-# -------------------------------------------------
-def embed_row(row):
-    text = ", ".join(f"{c}: {v}" for c, v in row.items())
-    inputs = tokenizer(text, return_tensors="pt", truncation=True).to(device)
-    with torch.no_grad():
-        emb = model(**inputs).last_hidden_state.mean(dim=1)
-    return emb.squeeze().cpu().numpy()
 
 # -------------------------------------------------
 # Find all CSVs

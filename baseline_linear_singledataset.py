@@ -58,8 +58,9 @@ if y_prob is not None:
     print(f"AUC: {auc:.4f}")
 
 # ----- Save results -----
+dataset_name = os.path.basename(data_file)
 with open(output_file, "w") as f:
-    f.write(f"Accuracy: {acc:.4f}\n")
+    f.write(f"{dataset_name}: Accuracy: {acc:.4f} ")
     if y_prob is not None:
         f.write(f"AUC: {auc:.4f}\n")
 

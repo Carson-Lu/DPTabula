@@ -1,10 +1,10 @@
 #!/bin/bash
-#SBATCH --job-name=tabula-creditg
+#SBATCH --job-name=tabula-alldatasets
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=1 
 #SBATCH --mem=64G
-#SBATCH --time=1:00:00
+#SBATCH --time=4:00:00
 #SBATCH --gres=gpu:a100:1 
 #SBATCH --mail-user=clu56@student.ubc.ca
 #SBATCH --mail-type=FAIL
@@ -37,10 +37,10 @@ cp -r /home/carson/projects/rrg-mijungp/carson/hf_models/tabula-8b ./tabula-8b
 echo "Model copied to $PWD/tabula-8b"
 
 # Run Python script on ALL datasets
-python -u ./tabula_linear_test.py \
+python -u ./tabula_linear_alldatasets.py \
     --data_dir ./data \
     --model_path ./tabula-8b \
-    --results_path /home/carson/scratch/Experiment Results/tabula_multidata_results_${SLURM_JOB_ID}.txt
+    --results_path /home/carson/scratch/Experiment_Results/tabula_multidata_results_${SLURM_JOB_ID}.txt
 
 # ----- Completion message -----
-echo "Done! Results saved to /home/carson/scratch/Experiment Results/tabula_multidata_results_${SLURM_JOB_ID}.txt"
+echo "Done! Results saved to /home/carson/scratch/Experiment_Results/tabula_multidata_results_${SLURM_JOB_ID}.txt"

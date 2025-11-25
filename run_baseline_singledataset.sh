@@ -1,10 +1,10 @@
 #!/bin/bash
-#SBATCH --job-name=baseline-creditg
+#SBATCH --job-name=baseline-singledataset
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=1 
-#SBATCH --mem=16G
-#SBATCH --time=0:20:00
+#SBATCH --mem=4G
+#SBATCH --time=0:05:00
 #SBATCH --mail-user=clu56@student.ubc.ca
 #SBATCH --gres=gpu:a100:1 
 #SBATCH --mail-type=FAIL
@@ -35,6 +35,6 @@ echo "Data copied to $PWD/data/pendigits.csv"
 # ----- Run baseline linear test -----
 python -u ./baseline_linear_singledataset.py \
        --data_path ./data/pendigits.csv \
-       --results_path /home/carson/scratch/Experiment Results/baseline_linear_classifier_results_pendigits_${SLURM_JOB_ID}.txt
+       --results_path /home/carson/scratch/Experiment_Results/baseline_linear_classifier_results_pendigits_${SLURM_JOB_ID}.txt
 
-echo "Done! Results saved to /home/carson/scratch/Experiment Results/baseline_linear_classifier_results_pendigits_${SLURM_JOB_ID}.txt"
+echo "Done! Results saved to /home/carson/scratch/Experiment_Results/baseline_linear_classifier_results_pendigits_${SLURM_JOB_ID}.txt"

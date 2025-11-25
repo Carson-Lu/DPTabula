@@ -1,10 +1,10 @@
 #!/bin/bash
-#SBATCH --job-name=tabula-singledataset
+#SBATCH --job-name=tabula-alldatasets
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=1 
-#SBATCH --mem=32G
-#SBATCH --time=1:00:00
+#SBATCH --mem=64G
+#SBATCH --time=3:00:00
 #SBATCH --gres=gpu:a100:1 
 #SBATCH --mail-user=clu56@student.ubc.ca
 #SBATCH --mail-type=FAIL
@@ -29,18 +29,16 @@ echo "Project copied to $PWD"
 
 # ----- Prepare data -----
 mkdir -p data
-cp /home/carson/projects/rrg-mijungp/carson/data/pendigits.csv ./data/
-echo "Data copied to $PWD/data/pendigits.csv"
+cp /home/carson/projects/rrg-mijungp/carson/data/*.csv ./data/
+echo "Data copied to $PWD/data/"
 
-# ----- Copy model to local storage -----
-cp -r /home/carson/projects/rrg-mijungp/carson/hf_models/tabula-8b ./tabula-8b
+on/hf_models/tabula-8b ./tabula-8b
 echo "Model copied to $PWD/tabula-8b"
 
-# ----- Run Python script -----
-python -u ./tabula_linear_singledataset.py \
-       --data_path ./data/pendigits.csv \
-       --model_path ./tabula-8b \
-       --results_path /home/carson/scratch/Experiment_Results/tabula_singledataset_result_${SLURM_JOB_ID}.txt
+# Run Python script on ALL datasets
+python -u ./tabula_linear_alldatasets.py \
+    --data_dir ./data \
+    --results_path /home/carson/scratch/Experiment_Results/baseline_alldatasets_results_${SLURM_JOB_ID}.txt
 
 # ----- Completion message -----
-echo "Done! Results saved to /home/carson/scratch/Experiment_Results/tabula_singledataset_result_${SLURM_JOB_ID}.txt"
+echo "Done! Results saved to /home/carson/scratch/Experiment_Results/baseline_alldatasets_results_${SLURM_JOB_ID}.txt"
