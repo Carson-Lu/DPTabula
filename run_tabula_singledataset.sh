@@ -2,10 +2,10 @@
 #SBATCH --job-name=tabula-creditg
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
-#SBATCH --cpus-per-task=1           # enough for data loading
-#SBATCH --mem=64G                   # adjust if your dataset is larger
+#SBATCH --cpus-per-task=1 
+#SBATCH --mem=64G
 #SBATCH --time=1:00:00
-#SBATCH --gres=gpu:a100:1           # GPU for embeddings
+#SBATCH --gres=gpu:a100:1 
 #SBATCH --mail-user=clu56@student.ubc.ca
 #SBATCH --mail-type=FAIL
 #SBATCH --mail-type=TIME_LIMIT
@@ -29,8 +29,8 @@ echo "Project copied to $PWD"
 
 # ----- Prepare data -----
 mkdir -p data
-cp /home/carson/projects/rrg-mijungp/carson/data/credit_g.csv ./data/
-echo "Data copied to $PWD/data/credit_g.csv"
+cp /home/carson/projects/rrg-mijungp/carson/data/pendigits.csv ./data/
+echo "Data copied to $PWD/data/pendigits.csv"
 
 # ----- Copy model to local storage -----
 cp -r /home/carson/projects/rrg-mijungp/carson/hf_models/tabula-8b ./tabula-8b
@@ -38,9 +38,9 @@ echo "Model copied to $PWD/tabula-8b"
 
 # ----- Run Python script -----
 python -u ./tabula_linear_test.py \
-       --data_path ./data/credit_g.csv \
+       --data_path ./data/pendigits.csv \
        --model_path ./tabula-8b \
-       --results_path /home/carson/scratch/logs/tabula_linear_classifier_results_${SLURM_JOB_ID}.out.txt
+       --results_path /home/carson/scratch/Experiment Results/tabula_linear_classifier_results_${SLURM_JOB_ID}.out.txt
 
 # ----- Completion message -----
 echo "Done! Results saved to /home/carson/scratch/logs/tabula_linear_classifier${SLURM_JOB_ID}.txt"

@@ -12,19 +12,16 @@ import openml
 output_dir = "/home/carson/projects/rrg-mijungp/carson/data"
 os.makedirs(output_dir, exist_ok=True) 
 
-output_file = os.path.join(output_dir, "credit_g.csv")
 
-# ----- 2. Download Credit-G from OpenML -----
-dataset_id = 31  # Credit-G
-
-print("Downloading Credit-G dataset from OpenML...")
+dataset_id = 32
 dataset = openml.datasets.get_dataset(dataset_id)
-X, y, categorical_indicator, attribute_names = dataset.get_data(target=dataset.default_target_attribute)
+X, y, _, _ = dataset.get_data(target=dataset.default_target_attribute)
 
-# ----- 3. Combine features and target -----
 df = X.copy()
 df[dataset.default_target_attribute] = y
 
-# ----- 4. Save to CSV -----
+dataset_name = dataset.name.replace(" ", "_")
+output_file = os.path.join(output_dir, f"{dataset_name}.csv")
+
 df.to_csv(output_file, index=False)
-print(f"Saved Credit-G dataset to {output_file}")
+print(f"Saved {dataset_name} to {output_file}")

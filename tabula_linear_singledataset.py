@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Load Credit-G dataset, generate Tabula-8B embeddings on GPU if available,
+Load SINGLE dataset, generate Tabula-8B embeddings on GPU if available,
 train a linear classifier, and evaluate performance. Paths are provided as arguments.
 """
 
@@ -13,10 +13,9 @@ from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import accuracy_score, roc_auc_score
 from transformers import AutoModel, AutoTokenizer
 
-print("tabula_linear_test.py running...")
 # ----- Parse command-line arguments -----
-parser = argparse.ArgumentParser(description="Tabula-8B embeddings + linear classifier on Credit-G")
-parser.add_argument("--data_path", type=str, required=True, help="Path to credit_g.csv")
+parser = argparse.ArgumentParser(description="Tabula-8B embeddings + linear classifier on given data")
+parser.add_argument("--data_path", type=str, required=True, help="Path to single CSV")
 parser.add_argument("--model_path", type=str, required=True, help="Path to Tabula-8B model directory")
 parser.add_argument("--results_path", type=str, required=True, help="Path to save results.txt")
 args = parser.parse_args()
@@ -25,9 +24,6 @@ data_file = args.data_path
 model_path = args.model_path
 output_file = args.results_path
 
-print(f"Data path: {data_file}")
-print(f"Model path: {model_path}")
-print(f"Results path: {output_file}")
 
 # ----- Seed for reproducibility -----
 torch.manual_seed(42)
@@ -49,7 +45,6 @@ print(f"Training samples: {len(X_train)}, Test samples: {len(X_test)}")
 
 # ----- Load Tabula-8B model -----
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-print(f"Using device: {device}")
 if device.type == "cuda":
     print(f"GPU name: {torch.cuda.get_device_name(0)}")
     print(f"GPU memory allocated: {torch.cuda.memory_allocated() / 1e9:.2f} GB")
@@ -76,19 +71,18 @@ def embed_row(row):
     return embeddings.squeeze().cpu().numpy()  # move to CPU for sklearn
 
 # ----- Embed datasets -----
-print("Generating embeddings for training set...")
+print("Generating embeddings for training...")
 X_train_emb = [embed_row(row) for _, row in X_train.iterrows()]
-print("Generating embeddings for test set...")
+print("Generating embeddings for testing...")
 X_test_emb = [embed_row(row) for _, row in X_test.iterrows()]
-print(f"Embedding vector shape: {X_train_emb[0].shape}")
 
 # ----- Train linear classifier -----
 print("Training logistic regression...")
-clf = LogisticRegression(max_iter=1000)
+clf = LogisticRegression(max_iter=10000)
 clf.fit(X_train_emb, y_train)
-print("Training completed.")
 
 # ----- Evaluate -----
+print("Evaluating model...")
 y_pred = clf.predict(X_test_emb)
 y_prob = clf.predict_proba(X_test_emb)[:, 1]
 
