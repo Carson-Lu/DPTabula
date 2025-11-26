@@ -10,8 +10,8 @@
 #SBATCH --mail-type=FAIL
 #SBATCH --mail-type=TIME_LIMIT
 #SBATCH --account=rrg-mijungp
-#SBATCH --output=/home/carson/scratch/logs/tabula_linear_classifier%j.out
-#SBATCH --error=/home/carson/scratch/logs/tabula_linear_classifier%j.err
+#SBATCH --output=/home/carson/scratch/logs/tabula_singledataset_%j.out
+#SBATCH --error=/home/carson/scratch/logs/tabula_singledataset_%j.err
 
 # ----- Load Python environment -----
 module purge

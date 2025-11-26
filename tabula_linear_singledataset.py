@@ -11,6 +11,7 @@ import torch
 from sklearn.model_selection import train_test_split
 from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import accuracy_score, roc_auc_score
+from sklearn.preprocessing import StandardScaler
 from transformers import AutoModel, AutoTokenizer
 
 # ----- Parse command-line arguments -----
@@ -24,6 +25,7 @@ data_file = args.data_path
 model_path = args.model_path
 output_file = args.results_path
 
+scaler = StandardScaler()
 
 # ----- Seed for reproducibility -----
 torch.manual_seed(42)
@@ -77,6 +79,9 @@ print("Generating embeddings for training...")
 X_train_emb = [embed_row(row) for _, row in X_train.iterrows()]
 print("Generating embeddings for testing...")
 X_test_emb = [embed_row(row) for _, row in X_test.iterrows()]
+
+X_train_emb = scaler.fit_transform(X_train_emb)  # fit on train
+X_test_emb = scaler.transform(X_test_emb)
 
 # ----- Train linear classifier -----
 print("Training logistic regression...")

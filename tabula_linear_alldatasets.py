@@ -11,7 +11,7 @@ import pandas as pd
 import numpy as np
 import torch
 import os
-
+from sklearn.preprocessing import StandardScaler
 from sklearn.model_selection import train_test_split
 from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import accuracy_score, roc_auc_score
@@ -30,6 +30,7 @@ data_dir = args.data_dir
 model_path = args.model_path
 results_path = args.results_path
 
+scaler = StandardScaler()
 # -------------------------------------------------
 # Seed
 # -------------------------------------------------
@@ -95,6 +96,9 @@ for csv_file in csv_files:
     # Embeddings
     X_train_emb = np.vstack([embed_row(row) for _, row in X_train.iterrows()])
     X_test_emb  = np.vstack([embed_row(row) for _, row in X_test.iterrows()])
+
+    X_train_emb = scaler.fit_transform(X_train_emb)  # fit on train
+    X_test_emb = scaler.transform(X_test_emb)
 
     # Train classifier
     clf = LogisticRegression(max_iter=5000)

@@ -4,14 +4,14 @@
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=1 
 #SBATCH --mem=64G
-#SBATCH --time=4:00:00
+#SBATCH --time=3:00:00
 #SBATCH --gres=gpu:a100:1 
 #SBATCH --mail-user=clu56@student.ubc.ca
 #SBATCH --mail-type=FAIL
 #SBATCH --mail-type=TIME_LIMIT
 #SBATCH --account=rrg-mijungp
-#SBATCH --output=/home/carson/scratch/logs/tabula_linear_classifier%j.out
-#SBATCH --error=/home/carson/scratch/logs/tabula_linear_classifier%j.err
+#SBATCH --output=/home/carson/scratch/logs/tabula_alldatasets_%j.out
+#SBATCH --error=/home/carson/scratch/logs/tabula_alldatasets_%j.err
 
 # ----- Load Python environment -----
 module purge

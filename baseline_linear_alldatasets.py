@@ -1,43 +1,37 @@
 #!/usr/bin/env python3
 """
-Load MULTIPLE datasets from a directory, generate Tabula-8B embeddings
-(train/test), train a linear classifier, and evaluate performance.
-
-Writes per-dataset results and an overall summary.
+Load MULTIPLE datasets from a directory, train a logistic classifier on raw tabular data,
+and evaluate performance. Writes per-dataset results and an overall summary CSV.
 """
 
 import argparse
 import pandas as pd
 import numpy as np
-import torch
 import os
-
 from sklearn.model_selection import train_test_split
 from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import accuracy_score, roc_auc_score
-from transformers import AutoModel, AutoTokenizer
 
 # -------------------------------------------------
 # Parse args
 # -------------------------------------------------
 parser = argparse.ArgumentParser(description="Baseline logistic regression on raw tabular data")
-parser.add_argument("--data_path", type=str, required=True, help="Path to CSV dataset")
-parser.add_argument("--results_path", type=str, required=True, help="Path to save results.txt")
+parser.add_argument("--data_dir", type=str, required=True, help="Directory containing CSV datasets")
+parser.add_argument("--results_path", type=str, required=True, help="Path to save results CSV")
 args = parser.parse_args()
 
 data_dir = args.data_dir
-model_path = args.model_path
+results_path = args.results_path
 
 # -------------------------------------------------
 # Seed
 # -------------------------------------------------
 seed = 42
-torch.manual_seed(seed)
 np.random.seed(seed)
 
 # -------------------------------------------------
 # Find all CSVs
-# -------------------------------------------------f
+# -------------------------------------------------
 csv_files = sorted([
     os.path.join(data_dir, f)
     for f in os.listdir(data_dir)
@@ -48,7 +42,6 @@ if not csv_files:
     raise RuntimeError("No CSV files found")
 
 print(f"Found {len(csv_files)} datasets.")
-
 
 # -------------------------------------------------
 # Process each dataset
@@ -61,30 +54,31 @@ for csv_file in csv_files:
 
     df = pd.read_csv(csv_file)
 
-    X = df.drop(columns=[df.columns[-1]])
-    y = df[df.columns[-1]]
-    y = pd.Categorical(y).codes
+    # Features and target
+    X = df.iloc[:, :-1].copy()  # all columns except last
+    y = df.iloc[:, -1].copy()   # last column as target
+    y = pd.Categorical(y).codes  # convert to numeric
 
-    # Train/test split
+    # Convert categorical/text columns in X to numeric using factorize
+    for col in X.select_dtypes(include=["object", "category"]).columns:
+        X[col], _ = pd.factorize(X[col])
+
+    # Train/test split (stratified to ensure all classes appear)
     X_train, X_test, y_train, y_test = train_test_split(
         X, y, test_size=0.2, random_state=seed, stratify=y
     )
 
-    # Embeddings
-    X_train_emb = np.vstack([embed_row(row) for _, row in X_train.iterrows()])
-    X_test_emb  = np.vstack([embed_row(row) for _, row in X_test.iterrows()])
-
     # Train classifier
     clf = LogisticRegression(max_iter=5000)
-    clf.fit(X_train_emb, y_train)
+    clf.fit(X_train, y_train)
 
     # Predictions
-    y_pred = clf.predict(X_test_emb)
+    y_pred = clf.predict(X_test)
     acc = accuracy_score(y_test, y_pred)
 
-    # AUC (only if probabilities available)
+    # AUC (multiclass-safe)
     try:
-        y_prob = clf.predict_proba(X_test_emb)
+        y_prob = clf.predict_proba(X_test)
         if len(np.unique(y)) == 2:
             auc = roc_auc_score(y_test, y_prob[:, 1])
         else:
@@ -102,7 +96,6 @@ for csv_file in csv_files:
         "n_test": len(X_test),
         "n_classes": len(np.unique(y)),
     })
-
 
 # -------------------------------------------------
 # Save summary CSV

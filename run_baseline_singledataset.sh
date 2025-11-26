@@ -10,8 +10,8 @@
 #SBATCH --mail-type=FAIL
 #SBATCH --mail-type=TIME_LIMIT
 #SBATCH --account=rrg-mijungp
-#SBATCH --output=/home/carson/scratch/logs/baseline_linear_classifier_%j.out
-#SBATCH --error=/home/carson/scratch/logs/baseline_linear_classifier_%j.err
+#SBATCH --output=/home/carson/scratch/logs/baseline_singledataset_%j.out
+#SBATCH --error=/home/carson/scratch/logs/baseline_singledataset_%j.err
 
 # ----- Load Python environment -----
 module purge
@@ -35,6 +35,6 @@ echo "Data copied to $PWD/data/pendigits.csv"
 # ----- Run baseline linear test -----
 python -u ./baseline_linear_singledataset.py \
        --data_path ./data/pendigits.csv \
-       --results_path /home/carson/scratch/Experiment_Results/baseline_linear_classifier_results_pendigits_${SLURM_JOB_ID}.txt
+       --results_path /home/carson/scratch/Experiment_Results/baseline_singledataset_results_${SLURM_JOB_ID}.txt
 
-echo "Done! Results saved to /home/carson/scratch/Experiment_Results/baseline_linear_classifier_results_pendigits_${SLURM_JOB_ID}.txt"
+echo "Done! Results saved to /home/carson/scratch/Experiment_Results/baseline_singledataset_results_${SLURM_JOB_ID}.txt"
