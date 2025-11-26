@@ -4,7 +4,7 @@
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=1 
 #SBATCH --mem=32G
-#SBATCH --time=1:00:00
+#SBATCH --time=00:30:00
 #SBATCH --gres=gpu:a100:1 
 #SBATCH --mail-user=clu56@student.ubc.ca
 #SBATCH --mail-type=FAIL
@@ -14,13 +14,16 @@
 #SBATCH --error=/home/carson/scratch/logs/tabula_singledataset_%j.err
 
 # ----- Define paths -----
-PROJECT_DIR="/home/carson/DPTabula"
-DATA_SOURCE="/home/carson/scratch/data/pendigits.csv"
-MODEL_SOURCE="/home/carson/scratch/hf_models/tabula-8b"
-RESULTS_DIR="/home/carson/scratch/Experiment_Results"
-TMP_PROJECT_DIR="${SLURM_TMPDIR}/DPTabula"
-TMP_DATA_DIR="${TMP_PROJECT_DIR}/data"
-TMP_MODEL_DIR="${TMP_PROJECT_DIR}/tabula-8b"
+PROJECT_DIR=/home/carson/DPTabula
+DATA_SRC=/home/carson/scratch/data/pendigits.csv
+MODEL_SRC=/home/carson/scratch/hf_models/tabula-8b
+RESULTS_DIR=/home/carson/scratch/Experiment_Results
+TMP_PROJECT_DIR=${SLURM_TMPDIR}/DPTabula
+TMP_DATA_DIR=${TMP_PROJECT_DIR}/data
+TMP_MODEL_DIR=${TMP_PROJECT_DIR}/tabula-8b
+BATCH_SIZE=32
+# Extract just the filename (pendigits.csv)
+DATA_FILENAME=$(basename "${DATA_SRC}")
 
 # ----- Load Python environment -----
 module purge
@@ -38,18 +41,19 @@ echo "Project copied to ${PWD}"
 
 # ----- Prepare data (rsync) -----
 mkdir -p "${TMP_DATA_DIR}"
-rsync -a "${DATA_SOURCE}" "${TMP_DATA_DIR}/" || true
+rsync -a "${DATA_SRC}" "${TMP_DATA_DIR}/" || true
 echo "Data copied to ${TMP_DATA_DIR}"
 
 # ----- Copy model to local storage (rsync) -----
-rsync -a "${MODEL_SOURCE}/" "${TMP_MODEL_DIR}/" || true
+rsync -a "${MODEL_SRC}/" "${TMP_MODEL_DIR}/" || true
 echo "Model copied to ${TMP_MODEL_DIR}"
 
 # ----- Run Python script -----
 python -u ./tabula_linear_singledataset.py \
-       --data_path "${TMP_DATA_DIR}/pendigits.csv" \
+       --data_path "${TMP_DATA_DIR}/${DATA_FILENAME}" \
        --model_path "${TMP_MODEL_DIR}" \
-       --results_path "${RESULTS_DIR}/tabula_singledataset_result_${SLURM_JOB_ID}.txt"
+       --results_path "${RESULTS_DIR}/tabula_singledataset_result_${SLURM_JOB_ID}.txt" \
+       --batch_size ${BATCH_SIZE}
 
 # ----- Completion message -----
 echo "Done! Results saved to ${RESULTS_DIR}/tabula_singledataset_result_${SLURM_JOB_ID}.txt"

@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 """
-Load SINGLE dataset, generate Tabula-8B embeddings on GPU if available,
+Load SINGLE dataset, generate Tabula-8B embeddings in batches on GPU,
 train a linear classifier, and evaluate performance. Paths are provided as arguments.
 """
 
+import os
 import argparse
 import pandas as pd
 import numpy as np
@@ -19,11 +20,13 @@ parser = argparse.ArgumentParser(description="Tabula-8B embeddings + linear clas
 parser.add_argument("--data_path", type=str, required=True, help="Path to single CSV")
 parser.add_argument("--model_path", type=str, required=True, help="Path to Tabula-8B model directory")
 parser.add_argument("--results_path", type=str, required=True, help="Path to save results.txt")
+parser.add_argument("--batch_size", type=int, default=32, help="Batch size for embedding generation")
 args = parser.parse_args()
 
 data_file = args.data_path
 model_path = args.model_path
 output_file = args.results_path
+batch_size = args.batch_size
 
 scaler = StandardScaler()
 
@@ -35,52 +38,52 @@ np.random.seed(42)
 print("Loading dataset...")
 df = pd.read_csv(data_file)
 X = df.drop(columns=[df.columns[-1]])  # assume target is last column
-y = df[df.columns[-1]]
-y = pd.Categorical(y).codes
+y = pd.Categorical(df[df.columns[-1]]).codes
 print(f"Dataset shape: X={X.shape}, y={y.shape}")
 
-# Split train/test
-print("Splitting dataset into train and test sets...")
+# ----- Train/test split -----
 X_train, X_test, y_train, y_test = train_test_split(
     X, y, test_size=0.2, random_state=42, stratify=y
 )
-
 print(f"Training samples: {len(X_train)}, Test samples: {len(X_test)}")
 
 # ----- Load Tabula-8B model -----
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+print(f"Using device: {device}")
 if device.type == "cuda":
     print(f"GPU name: {torch.cuda.get_device_name(0)}")
     print(f"GPU memory allocated: {torch.cuda.memory_allocated() / 1e9:.2f} GB")
 
-print("Loading Tabula-8B model...")
-try:
-    tokenizer = AutoTokenizer.from_pretrained(model_path, local_files_only=True, trust_remote_code=True)
-    model = AutoModel.from_pretrained(model_path, local_files_only=True, trust_remote_code=True)
-except Exception as e:
-    print(f"Error loading model from {model_path}: {e}")
-    raise
-
-model = model.to(device)
+tokenizer = AutoTokenizer.from_pretrained(model_path, local_files_only=True, trust_remote_code=True)
+model = AutoModel.from_pretrained(model_path, local_files_only=True, trust_remote_code=True).to(device)
 model.eval()
 print("Model loaded successfully.")
 
-# ----- Function to get row embeddings -----
-def embed_row(row):
-    """Convert a single row to Tabula-8B embedding vector on GPU."""
-    text = ", ".join(f"{c}: {v}" for c, v in row.items())
-    inputs = tokenizer(text, return_tensors="pt").to(device)
+# ----- Batch embedding function -----
+def embed_batch(df_batch):
+    """Generate embeddings for a batch of rows"""
+    texts = [", ".join(f"{c}: {v}" for c, v in row.items()) for _, row in df_batch.iterrows()]
+    inputs = tokenizer(texts, return_tensors="pt", padding=True, truncation=True).to(device)
     with torch.no_grad():
         embeddings = model(**inputs).last_hidden_state.mean(dim=1)
-    return embeddings.squeeze().cpu().numpy()  # move to CPU for sklearn
+    return embeddings.cpu().numpy()
 
-# ----- Embed datasets -----
+# ----- Generate embeddings in batches -----
+def generate_embeddings(X_df):
+    embeddings = []
+    for i in range(0, len(X_df), batch_size):
+        batch = X_df.iloc[i:i+batch_size]
+        emb = embed_batch(batch)
+        embeddings.append(emb)
+    return np.vstack(embeddings)
+
 print("Generating embeddings for training...")
-X_train_emb = [embed_row(row) for _, row in X_train.iterrows()]
+X_train_emb = generate_embeddings(X_train)
 print("Generating embeddings for testing...")
-X_test_emb = [embed_row(row) for _, row in X_test.iterrows()]
+X_test_emb = generate_embeddings(X_test)
 
-X_train_emb = scaler.fit_transform(X_train_emb)  # fit on train
+# ----- Scale embeddings -----
+X_train_emb = scaler.fit_transform(X_train_emb)
 X_test_emb = scaler.transform(X_test_emb)
 
 # ----- Train linear classifier -----
@@ -88,11 +91,10 @@ print("Training logistic regression...")
 clf = LogisticRegression(max_iter=5000)
 clf.fit(X_train_emb, y_train)
 
-# Predictions
+# ----- Predictions & metrics -----
 y_pred = clf.predict(X_test_emb)
 acc = accuracy_score(y_test, y_pred)
 
-# AUC (only if probabilities available)
 try:
     y_prob = clf.predict_proba(X_test_emb)
     if len(np.unique(y)) == 2:
@@ -105,10 +107,9 @@ except Exception:
 dataset_name = os.path.basename(data_file)
 print(f"{dataset_name}: accuracy={acc:.4f}, auc={auc:.4f}")
 
-
 # ----- Save results -----
 with open(output_file, "w") as f:
     f.write(f"{dataset_name}: accuracy={acc:.4f}, auc={auc:.4f}\n")
 
 print("Results saved to:", output_file)
-print("tabula_linear_test.py finished successfully.")
+print("tabula_linear_singledataset.py finished successfully.")

@@ -23,34 +23,38 @@ TMP_PROJECT_DIR=${SLURM_TMPDIR}/DPTabula
 TMP_DATA_DIR=${TMP_PROJECT_DIR}/data
 TMP_MODEL_DIR=${TMP_PROJECT_DIR}/tabula-8b
 
+# ----- Embedding batch size -----
+BATCH_SIZE=32   # adjust based on GPU memory usage
+
 # ----- Load Python environment -----
 module purge
 module load python/3.11
 source ~/DPTabula/py311-cc/bin/activate
 
 # ----- Move to fast local storage on node -----
-cd $SLURM_TMPDIR
-echo "Current directory: $SLURM_TMPDIR"
+cd "${SLURM_TMPDIR}" || exit
+echo "Current directory: ${SLURM_TMPDIR}"
 
-# ----- Clone repository (rsync) -----
-rsync -a --exclude=".git" ${PROJECT_SRC}/ ${TMP_PROJECT_DIR}/
-cd ${TMP_PROJECT_DIR}
-echo "Project copied to $PWD"
+# ----- Clone repository (rsync instead of cp) -----
+rsync -a --exclude=".git" "${PROJECT_SRC}/" "${TMP_PROJECT_DIR}/" || true
+cd "${TMP_PROJECT_DIR}" || exit
+echo "Project copied to ${PWD}"
 
 # ----- Prepare data (rsync) -----
-mkdir -p ${TMP_DATA_DIR}
-rsync -a ${DATA_SRC}/*.csv ${TMP_DATA_DIR}/
+mkdir -p "${TMP_DATA_DIR}"
+rsync -a "${DATA_SRC}"/*.csv "${TMP_DATA_DIR}/" || true
 echo "Data copied to $TMP_DATA_DIR"
 
 # ----- Copy model to local storage (rsync) -----
-rsync -a ${MODEL_SRC} ${TMP_MODEL_DIR}
-echo "Model copied to $TMP_MODEL_DIR"
+rsync -a "${MODEL_SRC}/" "${TMP_MODEL_DIR}/" || true
+echo "Model copied to ${TMP_MODEL_DIR}"
 
 # ----- Run Python script on ALL datasets -----
 python -u ./tabula_linear_alldatasets.py \
     --data_dir ${TMP_DATA_DIR} \
     --model_path ${TMP_MODEL_DIR} \
-    --results_path ${RESULTS_DIR}/tabula_multidata_results_${SLURM_JOB_ID}.txt
+    --results_path ${RESULTS_DIR}/tabula_multidata_results_${SLURM_JOB_ID}.txt \
+    --batch_size ${BATCH_SIZE}
 
 # ----- Completion message -----
 echo "Done! Results saved to ${RESULTS_DIR}/tabula_multidata_results_${SLURM_JOB_ID}.txt"

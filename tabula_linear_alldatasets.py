@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 Load MULTIPLE datasets from a directory, generate Tabula-8B embeddings
-(train/test), train a linear classifier, and evaluate performance.
+(train/test) in batches, train a linear classifier, and evaluate performance.
 
 Writes per-dataset results and an overall summary.
 """
@@ -24,13 +24,16 @@ parser = argparse.ArgumentParser(description="Tabula-8B embedding classifier for
 parser.add_argument("--data_dir", type=str, required=True, help="Directory containing multiple CSVs")
 parser.add_argument("--model_path", type=str, required=True, help="Path to Tabula-8B model")
 parser.add_argument("--results_path", type=str, required=True, help="Path to write results output CSV")
+parser.add_argument("--batch_size", type=int, default=32, help="Batch size for embedding generation")
 args = parser.parse_args()
 
 data_dir = args.data_dir
 model_path = args.model_path
 results_path = args.results_path
+batch_size = args.batch_size
 
 scaler = StandardScaler()
+
 # -------------------------------------------------
 # Seed
 # -------------------------------------------------
@@ -49,29 +52,23 @@ model = AutoModel.from_pretrained(model_path, local_files_only=True, trust_remot
 model.eval()
 
 # -------------------------------------------------
-# Embedding function
+# Embedding function (batch)
 # -------------------------------------------------
-def embed_row(row):
-    text = ", ".join(f"{c}: {v}" for c, v in row.items())
-    inputs = tokenizer(text, return_tensors="pt", truncation=True).to(device)
+def embed_batch(df_batch):
+    """Convert a dataframe batch into embeddings"""
+    texts = [", ".join(f"{c}: {v}" for c, v in row.items()) for _, row in df_batch.iterrows()]
+    inputs = tokenizer(texts, return_tensors="pt", truncation=True, padding=True).to(device)
     with torch.no_grad():
         emb = model(**inputs).last_hidden_state.mean(dim=1)
-    return emb.squeeze().cpu().numpy()
+    return emb.cpu().numpy()
 
 # -------------------------------------------------
 # Find all CSVs
-# -------------------------------------------------f
-csv_files = sorted([
-    os.path.join(data_dir, f)
-    for f in os.listdir(data_dir)
-    if f.endswith(".csv")
-])
-
+# -------------------------------------------------
+csv_files = sorted([os.path.join(data_dir, f) for f in os.listdir(data_dir) if f.endswith(".csv")])
 if not csv_files:
     raise RuntimeError("No CSV files found")
-
 print(f"Found {len(csv_files)} datasets.")
-
 
 # -------------------------------------------------
 # Process each dataset
@@ -85,19 +82,28 @@ for csv_file in csv_files:
     df = pd.read_csv(csv_file)
 
     X = df.drop(columns=[df.columns[-1]])
-    y = df[df.columns[-1]]
-    y = pd.Categorical(y).codes
+    y = pd.Categorical(df[df.columns[-1]]).codes
 
     # Train/test split
     X_train, X_test, y_train, y_test = train_test_split(
         X, y, test_size=0.2, random_state=seed, stratify=y
     )
 
-    # Embeddings
-    X_train_emb = np.vstack([embed_row(row) for _, row in X_train.iterrows()])
-    X_test_emb  = np.vstack([embed_row(row) for _, row in X_test.iterrows()])
+    # Embeddings in batches
+    X_train_emb = []
+    for i in range(0, len(X_train), batch_size):
+        batch = X_train.iloc[i:i+batch_size]
+        X_train_emb.append(embed_batch(batch))
+    X_train_emb = np.vstack(X_train_emb)
 
-    X_train_emb = scaler.fit_transform(X_train_emb)  # fit on train
+    X_test_emb = []
+    for i in range(0, len(X_test), batch_size):
+        batch = X_test.iloc[i:i+batch_size]
+        X_test_emb.append(embed_batch(batch))
+    X_test_emb = np.vstack(X_test_emb)
+
+    # Scale embeddings
+    X_train_emb = scaler.fit_transform(X_train_emb)
     X_test_emb = scaler.transform(X_test_emb)
 
     # Train classifier
@@ -129,6 +135,8 @@ for csv_file in csv_files:
         "n_classes": len(np.unique(y)),
     })
 
+    # Free GPU memory between datasets
+    torch.cuda.empty_cache()
 
 # -------------------------------------------------
 # Save summary CSV
