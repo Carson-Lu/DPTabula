@@ -9,11 +9,11 @@ import os
 import pandas as pd
 import openml
 
-output_dir = "/home/carson/projects/rrg-mijungp/carson/data"
+output_dir = "/home/carson/scratch/data"
 os.makedirs(output_dir, exist_ok=True) 
 
 
-dataset_id = 32
+dataset_id = 31
 dataset = openml.datasets.get_dataset(dataset_id)
 X, y, _, _ = dataset.get_data(target=dataset.default_target_attribute)
 

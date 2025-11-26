@@ -13,34 +13,43 @@
 #SBATCH --output=/home/carson/scratch/logs/tabula_singledataset_%j.out
 #SBATCH --error=/home/carson/scratch/logs/tabula_singledataset_%j.err
 
+# ----- Define paths -----
+PROJECT_DIR="/home/carson/DPTabula"
+DATA_SOURCE="/home/carson/scratch/data/pendigits.csv"
+MODEL_SOURCE="/home/carson/scratch/hf_models/tabula-8b"
+RESULTS_DIR="/home/carson/scratch/Experiment_Results"
+TMP_PROJECT_DIR="${SLURM_TMPDIR}/DPTabula"
+TMP_DATA_DIR="${TMP_PROJECT_DIR}/data"
+TMP_MODEL_DIR="${TMP_PROJECT_DIR}/tabula-8b"
+
 # ----- Load Python environment -----
 module purge
 module load python/3.11
 source ~/DPTabula/py311-cc/bin/activate
 
 # ----- Move to fast local storage on node -----
-cd $SLURM_TMPDIR
-echo "Current directory: $SLURM_TMPDIR"
+cd "${SLURM_TMPDIR}" || exit
+echo "Current directory: ${SLURM_TMPDIR}"
 
-# ----- Clone repository -----
-cp -r /home/carson/DPTabula ./DPTabula
-cd DPTabula
-echo "Project copied to $PWD"
+# ----- Clone repository (rsync instead of cp) -----
+rsync -a --exclude=".git" "${PROJECT_DIR}/" "${TMP_PROJECT_DIR}/" || true
+cd "${TMP_PROJECT_DIR}" || exit
+echo "Project copied to ${PWD}"
 
-# ----- Prepare data -----
-mkdir -p data
-cp /home/carson/projects/rrg-mijungp/carson/data/pendigits.csv ./data/
-echo "Data copied to $PWD/data/pendigits.csv"
+# ----- Prepare data (rsync) -----
+mkdir -p "${TMP_DATA_DIR}"
+rsync -a "${DATA_SOURCE}" "${TMP_DATA_DIR}/" || true
+echo "Data copied to ${TMP_DATA_DIR}"
 
-# ----- Copy model to local storage -----
-cp -r /home/carson/projects/rrg-mijungp/carson/hf_models/tabula-8b ./tabula-8b
-echo "Model copied to $PWD/tabula-8b"
+# ----- Copy model to local storage (rsync) -----
+rsync -a "${MODEL_SOURCE}/" "${TMP_MODEL_DIR}/" || true
+echo "Model copied to ${TMP_MODEL_DIR}"
 
 # ----- Run Python script -----
 python -u ./tabula_linear_singledataset.py \
-       --data_path ./data/pendigits.csv \
-       --model_path ./tabula-8b \
-       --results_path /home/carson/scratch/Experiment_Results/tabula_singledataset_result_${SLURM_JOB_ID}.txt
+       --data_path "${TMP_DATA_DIR}/pendigits.csv" \
+       --model_path "${TMP_MODEL_DIR}" \
+       --results_path "${RESULTS_DIR}/tabula_singledataset_result_${SLURM_JOB_ID}.txt"
 
 # ----- Completion message -----
-echo "Done! Results saved to /home/carson/scratch/Experiment_Results/tabula_singledataset_result_${SLURM_JOB_ID}.txt"
+echo "Done! Results saved to ${RESULTS_DIR}/tabula_singledataset_result_${SLURM_JOB_ID}.txt"

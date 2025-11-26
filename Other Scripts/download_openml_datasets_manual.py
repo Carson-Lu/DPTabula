@@ -8,15 +8,16 @@ import pandas as pd
 import openml
 
 # ----- Configuration -----
-output_dir = "/home/carson/projects/rrg-mijungp/carson/data"
+output_dir = "/home/carson/scratch/data"
 os.makedirs(output_dir, exist_ok=True)
 
 # Use project-local cache to avoid ~/.cache issues
-openml.config.cache_directory = "/home/carson/projects/rrg-mijungp/carson/openml_cache"
+openml.config.cache_directory = "/home/carson/scratch//openml_cache"
 os.makedirs(openml.config.cache_directory, exist_ok=True)
 
 # Dataset IDs to download
-dataset_ids = [1464, 1063, 3, 1067, 1494, 1510, 1068, 1050, 37, 1480, 1489, 1049]
+dataset_ids = [1464, 1063, 3, 1067, 1494, 1510, 1068, 1050, 37, 1480, 1489, 1049, 32, 31
+                1567, 6, 1591, 14, 60, 1485]
 
 for dataset_id in dataset_ids:
     print(f"\nProcessing dataset ID {dataset_id}...")

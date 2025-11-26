@@ -4,7 +4,7 @@
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=1 
 #SBATCH --mem=64G
-#SBATCH --time=3:00:00
+#SBATCH --time=1:00:00
 #SBATCH --gres=gpu:a100:1 
 #SBATCH --mail-user=clu56@student.ubc.ca
 #SBATCH --mail-type=FAIL
@@ -12,6 +12,16 @@
 #SBATCH --account=rrg-mijungp
 #SBATCH --output=/home/carson/scratch/logs/tabula_alldatasets_%j.out
 #SBATCH --error=/home/carson/scratch/logs/tabula_alldatasets_%j.err
+
+# ----- Define paths -----
+PROJECT_SRC=/home/carson/DPTabula
+DATA_SRC=/home/carson/scratch/data
+MODEL_SRC=/home/carson/scratch/hf_models/tabula-8b
+RESULTS_DIR=/home/carson/scratch/Experiment_Results
+
+TMP_PROJECT_DIR=${SLURM_TMPDIR}/DPTabula
+TMP_DATA_DIR=${TMP_PROJECT_DIR}/data
+TMP_MODEL_DIR=${TMP_PROJECT_DIR}/tabula-8b
 
 # ----- Load Python environment -----
 module purge
@@ -22,25 +32,25 @@ source ~/DPTabula/py311-cc/bin/activate
 cd $SLURM_TMPDIR
 echo "Current directory: $SLURM_TMPDIR"
 
-# ----- Clone repository -----
-cp -r /home/carson/DPTabula ./DPTabula
-cd DPTabula
+# ----- Clone repository (rsync) -----
+rsync -a --exclude=".git" ${PROJECT_SRC}/ ${TMP_PROJECT_DIR}/
+cd ${TMP_PROJECT_DIR}
 echo "Project copied to $PWD"
 
-# ----- Prepare data -----
-mkdir -p data
-cp /home/carson/projects/rrg-mijungp/carson/data/*.csv ./data/
-echo "Data copied to $PWD/data/"
+# ----- Prepare data (rsync) -----
+mkdir -p ${TMP_DATA_DIR}
+rsync -a ${DATA_SRC}/*.csv ${TMP_DATA_DIR}/
+echo "Data copied to $TMP_DATA_DIR"
 
-# ----- Copy model to local storage -----
-cp -r /home/carson/projects/rrg-mijungp/carson/hf_models/tabula-8b ./tabula-8b
-echo "Model copied to $PWD/tabula-8b"
+# ----- Copy model to local storage (rsync) -----
+rsync -a ${MODEL_SRC} ${TMP_MODEL_DIR}
+echo "Model copied to $TMP_MODEL_DIR"
 
-# Run Python script on ALL datasets
+# ----- Run Python script on ALL datasets -----
 python -u ./tabula_linear_alldatasets.py \
-    --data_dir ./data \
-    --model_path ./tabula-8b \
-    --results_path /home/carson/scratch/Experiment_Results/tabula_multidata_results_${SLURM_JOB_ID}.txt
+    --data_dir ${TMP_DATA_DIR} \
+    --model_path ${TMP_MODEL_DIR} \
+    --results_path ${RESULTS_DIR}/tabula_multidata_results_${SLURM_JOB_ID}.txt
 
 # ----- Completion message -----
-echo "Done! Results saved to /home/carson/scratch/Experiment_Results/tabula_multidata_results_${SLURM_JOB_ID}.txt"
+echo "Done! Results saved to ${RESULTS_DIR}/tabula_multidata_results_${SLURM_JOB_ID}.txt"
