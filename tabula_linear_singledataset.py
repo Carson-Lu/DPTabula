@@ -20,7 +20,7 @@ parser = argparse.ArgumentParser(description="Tabula-8B embeddings + linear clas
 parser.add_argument("--data_path", type=str, required=True, help="Path to single CSV")
 parser.add_argument("--model_path", type=str, required=True, help="Path to Tabula-8B model directory")
 parser.add_argument("--results_path", type=str, required=True, help="Path to save results.txt")
-parser.add_argument("--batch_size", type=int, default=32, help="Batch size for embedding generation")
+parser.add_argument("--batch_size", type=int, default=2, help="Batch size for embedding generation")
 args = parser.parse_args()
 
 data_file = args.data_path
@@ -64,17 +64,28 @@ def embed_batch(df_batch):
     """Generate embeddings for a batch of rows"""
     texts = [", ".join(f"{c}: {v}" for c, v in row.items()) for _, row in df_batch.iterrows()]
     inputs = tokenizer(texts, return_tensors="pt", padding=True, truncation=True).to(device)
-    with torch.no_grad():
-        embeddings = model(**inputs).last_hidden_state.mean(dim=1)
-    return embeddings.cpu().numpy()
+    with torch.inference_mode():
+        emb = model(**inputs).last_hidden_state.mean(dim=1)
+    emb_np = emb.cpu().numpy()
+    del inputs, emb
+    torch.cuda.empty_cache()
+    return emb_np
 
 # ----- Generate embeddings in batches -----
 def generate_embeddings(X_df):
     embeddings = []
-    for i in range(0, len(X_df), batch_size):
+    total = len(X_df)
+    checkpoints = {int(total * p / 100) for p in range(25, 101, 25)}
+
+    for i in range(0, total, batch_size):
         batch = X_df.iloc[i:i+batch_size]
-        emb = embed_batch(batch)
-        embeddings.append(emb)
+        embeddings.append(embed_batch(batch))
+
+        current = min(i + batch_size, total)
+        if current in checkpoints:
+            percent = int(current / total * 100)
+            print(f"{percent}% complete")
+
     return np.vstack(embeddings)
 
 print("Generating embeddings for training...")

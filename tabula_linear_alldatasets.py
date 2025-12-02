@@ -17,14 +17,11 @@ from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import accuracy_score, roc_auc_score
 from transformers import AutoModel, AutoTokenizer
 
-# -------------------------------------------------
-# Parse args
-# -------------------------------------------------
 parser = argparse.ArgumentParser(description="Tabula-8B embedding classifier for multiple datasets")
 parser.add_argument("--data_dir", type=str, required=True, help="Directory containing multiple CSVs")
 parser.add_argument("--model_path", type=str, required=True, help="Path to Tabula-8B model")
 parser.add_argument("--results_path", type=str, required=True, help="Path to write results output CSV")
-parser.add_argument("--batch_size", type=int, default=32, help="Batch size for embedding generation")
+parser.add_argument("--batch_size", type=int, default=4, help="Batch size for embedding generation")
 args = parser.parse_args()
 
 data_dir = args.data_dir
@@ -34,45 +31,34 @@ batch_size = args.batch_size
 
 scaler = StandardScaler()
 
-# -------------------------------------------------
-# Seed
-# -------------------------------------------------
 seed = 42
 torch.manual_seed(seed)
 np.random.seed(seed)
 
-# -------------------------------------------------
-# Load Tabula model + tokenizer
-# -------------------------------------------------
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 print(f"Using device: {device}")
 
 tokenizer = AutoTokenizer.from_pretrained(model_path, local_files_only=True, trust_remote_code=True)
-model = AutoModel.from_pretrained(model_path, local_files_only=True, trust_remote_code=True).to(device)
+model = AutoModel.from_pretrained(
+    model_path, local_files_only=True, trust_remote_code=True
+).to(device, dtype=torch.float16)
 model.eval()
 
-# -------------------------------------------------
-# Embedding function (batch)
-# -------------------------------------------------
 def embed_batch(df_batch):
-    """Convert a dataframe batch into embeddings"""
     texts = [", ".join(f"{c}: {v}" for c, v in row.items()) for _, row in df_batch.iterrows()]
     inputs = tokenizer(texts, return_tensors="pt", truncation=True, padding=True).to(device)
-    with torch.no_grad():
+    with torch.inference_mode():
         emb = model(**inputs).last_hidden_state.mean(dim=1)
-    return emb.cpu().numpy()
+    emb_np = emb.cpu().numpy()
+    del inputs, emb
+    torch.cuda.empty_cache()
+    return emb_np
 
-# -------------------------------------------------
-# Find all CSVs
-# -------------------------------------------------
 csv_files = sorted([os.path.join(data_dir, f) for f in os.listdir(data_dir) if f.endswith(".csv")])
 if not csv_files:
     raise RuntimeError("No CSV files found")
 print(f"Found {len(csv_files)} datasets.")
 
-# -------------------------------------------------
-# Process each dataset
-# -------------------------------------------------
 results = []
 
 for csv_file in csv_files:
