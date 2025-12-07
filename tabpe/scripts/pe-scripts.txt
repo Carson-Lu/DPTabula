@@ -1,0 +1,9 @@
+bash scripts/pe.sh --dataset artificial-characters --epochs 15 --sampling_epochs 5 --num_samples 1000
+bash scripts/pe.sh --dataset person_activity --sampling_epochs 3 --num_samples 5000
+
+bash scripts/pe.sh --dataset scm_nn --num_samples 2000
+bash scripts/pe.sh --dataset scm_tree --num_samples 2000
+bash scripts/pe.sh --dataset scm_rff --num_samples 2000
+
+bash scripts/pe.sh --dataset adult --epochs 30 --sampling_epochs 5 --num_samples 1000
+bash scripts/pe.sh --dataset breast_cancer --num_samples 100
