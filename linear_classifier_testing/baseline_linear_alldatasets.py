@@ -69,7 +69,7 @@ for csv_file in csv_files:
     )
 
     # Train classifier
-    clf = LogisticRegression(max_iter=15000)
+    clf = LogisticRegression(max_iter=25000)
     clf.fit(X_train, y_train)
 
     # Predictions

@@ -46,7 +46,7 @@ X_test = scaler.transform(X_test)
 print(f"Training samples: {len(X_train)}, Test samples: {len(X_test)}")
 
 # ----- Train logistic regression -----
-clf = LogisticRegression(max_iter=10000)
+clf = LogisticRegression(max_iter=25000)
 clf.fit(X_train, y_train)
 print("Training completed.")
 

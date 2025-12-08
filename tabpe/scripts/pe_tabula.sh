@@ -4,7 +4,7 @@
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=1
 #SBATCH --mem=64G
-#SBATCH --time=10:00:00
+#SBATCH --time=4:00:00
 #SBATCH --gres=gpu:a100:1 
 #SBATCH --mail-user=clu56@student.ubc.ca
 #SBATCH --mail-type=FAIL
@@ -47,11 +47,11 @@ while [[ "$#" -gt 0 ]]; do
     shift
 done
 
-PROJECT_DIR=/home/carson/tabpe
-DATA_DIR=/home/carson/tabpe/data
+PROJECT_DIR=/home/carson/DPTabula/tabpe
+DATA_DIR=/home/carson/scratch/data_tabpe
 DATA_SRC="${DATA_DIR}/${dataset}"
 MODEL_SRC=/home/carson/scratch/hf_models/tabula-8b
-RESULTS_DIR=/home/carson/scratch/Experiment_Results
+RESULTS_DIR=/home/carson/scratch/Tabpe_results
 
 TMP_PROJECT_DIR=${SLURM_TMPDIR}/tabpe
 TMP_DATA_DIR=${TMP_PROJECT_DIR}/data

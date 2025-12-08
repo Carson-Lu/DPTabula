@@ -12,33 +12,42 @@
 #SBATCH --output=/home/carson/scratch/logs/baseline_singledataset_%j.out
 #SBATCH --error=/home/carson/scratch/logs/baseline_singledataset_%j.err
 
-# ----- Define paths -----
-PROJECT_DIR=/home/carson/DPTabula
-DATA_SOURCE=/home/carson/scratch/data/pendigits.csv
-RESULTS_DIR=/home/carson/scratch/Experiment_Results
-TMP_PROJECT_DIR=${SLURM_TMPDIR}/DPTabula
-TMP_DATA_DIR=${TMP_PROJECT_DIR}/data
+HOME="/home/carson"
+PROJECT_DIR="${HOME}/DPTabula/linear_classifier_testing"
+DATA_SOURCE="${HOME}/scratch/data"
+RESULTS_DIR="${HOME}/scratch/Experiment_Results"
+TMP_PROJECT_DIR="${SLURM_TMPDIR}/linear_classifier_testing"
+TMP_DATA_DIR="${TMP_PROJECT_DIR}/data"
 
-# ----- Load Python environment -----
-module purge
-module load python/3.11
-source ~/DPTabula/py311-cc/bin/activate
 
-# ----- Move to fast local storage on node -----
-cd $SLURM_TMPDIR
+# ----- Default parameters -----
+dataset="pendigits.csv"   
+
+while [[ "$#" -gt 0 ]]; do
+    case $1 in
+        --dataset) dataset="$2"; shift ;;
+        *) echo "Unknown parameter: $1"; exit 1 ;;
+    esac
+    shift
+done
+
+cd "$SLURM_TMPDIR" || exit
 echo "Current directory: $SLURM_TMPDIR"
 
-# ----- Clone repository (rsync instead of cp) -----
-rsync -a --exclude=".git" ${PROJECT_DIR}/ ${TMP_PROJECT_DIR}/
-cd ${TMP_PROJECT_DIR}
+rsync -a --exclude=".git" "${PROJECT_DIR}/" "${TMP_PROJECT_DIR}/"
+cd "${TMP_PROJECT_DIR}" || exit
 echo "Project copied to $PWD"
 
-# ----- Prepare data (rsync) -----
-mkdir -p ${TMP_DATA_DIR}
-rsync -a ${DATA_SOURCE} ${TMP_DATA_DIR}/
+module load python/3.11
+virtualenv --no-download $SLURM_TMPDIR/env
+source $SLURM_TMPDIR/env/bin/activate
+pip install --no-index --upgrade pip > /dev/null
+pip install --no-index -r requirements-cc.txt > /dev/null
+
+mkdir -p "${TMP_DATA_DIR}"
+rsync -a "${DATA_SOURCE}/" "${TMP_DATA_DIR}/"
 echo "Data copied to $TMP_DATA_DIR"
 
-# ----- Run Python script -----
 python -u ./baseline_linear_singledataset.py \
-       --data_path ${TMP_DATA_DIR}/pendigits.csv \
-       --results_path ${RESULTS_DIR}/baseline_singledataset_results_${SLURM_JOB_ID}.txt
+       --data_path "${TMP_DATA_DIR}/${dataset}" \
+       --results_path "${RESULTS_DIR}/baseline_singledataset_results_${SLURM_JOB_ID}.txt"
