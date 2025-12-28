@@ -36,7 +36,6 @@ while [[ "$#" -gt 0 ]]; do
 done
 
 data_dir="data/processed/$dataset/$seed"
-data_all="$data_dir/data_train.csv"
 data_train="$data_dir/data_train.csv"
 data_val="$data_dir/data_val.csv"
 data_test="$data_dir/data_test.csv"

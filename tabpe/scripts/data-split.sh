@@ -17,9 +17,10 @@ done
 
 [[ -z "$dataset" || -z "$seed" ]] && { echo "Usage: --dataset <name> --seed <seed>"; exit 1; }
 
-data_all="../data/$dataset/${dataset}.csv"
+data_folder="/home/carson/scratch/data_tabpe/$dataset"
+data_all="$data_folder/${dataset}.csv"
 
 python -u ../src/data_processing/main.py \
     --data_all "$data_all" \
-    --output_dir "data/processed/$dataset" \
+    --output_dir "$data_folder/processed/$dataset" \
     --seed "$seed"
