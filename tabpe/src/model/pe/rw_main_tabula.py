@@ -63,12 +63,11 @@ def parse_args():
     parser.add_argument('--epsilon', default=-1, type=float, help='Privacy epsilon value')
 
     # ADDED ==============================================================
-    parser.add_argument('--model_path', type=str, required=True, help='Path to Tabula-8B model')
-    parser.add_argument('--results_path', type=str, required=False, help='Path to write results output CSV')
+    parser.add_argument('--model_path', type=str, required=True, help='Path to embedding model')
     parser.add_argument('--batch_size', type=int, default=4, help='Batch size for embedding generation')
+    parser.add_argument('--generator_method', type=str, default='tabula', help='Which generator to use')
+    parser.add_argument('--compare_method', type=str, default='tabula', help='Which comparison method to use')
     # END OF ADDED ========================================================
-    # TODO add flag on whether or not to use embeddings or their code
-    # TODO which generator to use, theirs or Tabula say, add flag for this
     args = parser.parse_args()
 
     return args
@@ -76,7 +75,6 @@ def parse_args():
 def main(args):
     # ADDED ==============================================================
     model_path = args.model_path
-    results_path = args.results_path
     batch_size = args.batch_size
 
     seed = 42

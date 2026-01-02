@@ -1,0 +1,25 @@
+pandas 
+numpy==1.26.4
+scipy
+scikit-learn
+seaborn
+torch
+jax
+cupy
+catboost
+xgboost
+tomli
+tomli_w
+chex
+flax
+pynvml
+opacus
+optuna
+category-encoders
+skorch
+nvidia-ml-py
+# below not available on computecanada wheels do  pip download --no-deps <package>
+# tabpfn
+# tabicl
+# prdc
+# autodp

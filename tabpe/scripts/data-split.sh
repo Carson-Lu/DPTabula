@@ -1,10 +1,10 @@
 #!/bin/bash
 
-#Default values
 dataset="adult"
 seed="42"
 
-# Usage: ./run_data_split.sh --dataset adult --seed 42
+# TODO test if this is needed or can just use ../src/data_processing/main.py
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 while [[ "$#" -gt 0 ]]; do
     case $1 in
@@ -20,7 +20,7 @@ done
 data_folder="/home/carson/scratch/data_tabpe/$dataset"
 data_all="$data_folder/${dataset}.csv"
 
-python -u ../src/data_processing/main.py \
+python -u "${SCRIPT_DIR}/../src/data_processing/main.py" \
     --data_all "$data_all" \
     --output_dir "$data_folder/processed/$dataset" \
     --seed "$seed"

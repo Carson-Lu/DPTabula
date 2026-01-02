@@ -27,6 +27,8 @@ eval_only=false
 decay_type="polynomial"
 gamma=0.2
 BATCH_SIZE=4
+generator_method="tabpe"
+compare_method="tabpe"
 
 while [[ "$#" -gt 0 ]]; do
     case $1 in
@@ -42,6 +44,8 @@ while [[ "$#" -gt 0 ]]; do
         --eval_only) eval_only="$2"; shift ;;
         --decay_type) decay_type="$2"; shift ;; 
         --gamma) gamma="$2"; shift ;;
+        --generator_method) generator_method="$2"; shift ;;
+        --compare_method) compare_method="$2"; shift ;;
         *) echo "Unknown parameter: $1"; exit 1 ;;
     esac
     shift
@@ -60,7 +64,9 @@ TMP_OUTPUT_DIR=${TMP_PROJECT_DIR}/outputs
 
 module purge
 module load python/3.11
-source ~/tabpe/ENV/bin/activate
+# TODO update path when compute canada adds wheel for autodp
+#source ~/tabpe/ENV/bin/activate
+source /home/carson/DPTabula/tabpe/ENV/bin/activate
 
 cd "${SLURM_TMPDIR}" || exit
 echo "Current directory: ${SLURM_TMPDIR}"
@@ -69,19 +75,25 @@ rsync -a --exclude=".git" "${PROJECT_DIR}/" "${TMP_PROJECT_DIR}/"
 cd "${TMP_PROJECT_DIR}" || exit
 echo "Project copied to ${PWD}"
 
-mkdir -p "${TMP_DATA_DIR}"
-rsync -a "${DATA_SRC}/" "${TMP_DATA_DIR}/"
-echo "Data copied to ${TMP_DATA_DIR}"
-
-rsync -a "${MODEL_SRC}/" "${TMP_MODEL_DIR}/"
-echo "Model copied to ${TMP_MODEL_DIR}"
+if [[ "$generator_method" == "tabpe" || "$compare_method" == "tabpe" ]]; then
+    rsync -a "${MODEL_SRC}/" "${TMP_MODEL_DIR}/"
+    echo "Model copied to ${TMP_MODEL_DIR}"
+else
+    echo "Skipping model copy (generator_method=$generator_method, compare_method=$compare_method)"
+fi
 
 mkdir -p "${TMP_OUTPUT_DIR}"
 OUTPUT_DIR="${RESULTS_DIR}/${dataset}/${seed}/pe/eps_${epsilon}_ns_${num_samples}_e_${epochs}_se_${sampling_epochs}_v_${num_variations}_vm_${variance_multiplier}_dt_${decay_type}_gamma_${gamma}"
 mkdir -p "$OUTPUT_DIR"
 
-echo -e "\nRunning data split ========================================================"
+# Note that this copies the data to SCRATCH (so we save the split rather than just in TMPDIR)
+echo "Running data split"
 bash "${TMP_PROJECT_DIR}/scripts/data-split.sh" --dataset "$dataset" --seed "$seed"
+echo "Data split completed"
+
+mkdir -p "${TMP_DATA_DIR}/${dataset}"
+rsync -a "${DATA_SRC}/" "${TMP_DATA_DIR}/${dataset}/"
+echo "Data copied to ${TMP_DATA_DIR}"
 
 # ----- Run PE -----
 if [[ "$eval_only" == false ]]; then
@@ -89,11 +101,10 @@ if [[ "$eval_only" == false ]]; then
     start_time=$(date +%s)
     start_time_readable=$(date)
     echo "Starting PE execution at: $start_time_readable"
-
     python -u "${TMP_PROJECT_DIR}/src/model/pe/rw_main_tabula.py" \
         --epochs "$epochs" \
         --sampling_epochs "$sampling_epochs" \
-        --priv_train_csv "${TMP_PROJECT_DIR}/scripts/data/processed/${dataset}/${seed}/data_train.csv" \
+        --priv_train_csv "${TMP_DATA_DIR}/${dataset}/processed/${dataset}/${seed}/data_train.csv" \
         --metadata_path "${TMP_DATA_DIR}/${dataset}/metadata.json" \
         --num_samples "$num_samples" \
         --num_variations "$num_variations" \
@@ -103,8 +114,10 @@ if [[ "$eval_only" == false ]]; then
         --output_dir "/home/carson/scratch/logs" \
         --epsilon "$epsilon" \
         --model_path "${TMP_MODEL_DIR}" \
-        --results_path "${OUTPUT_DIR}/pe_tabula_result_${SLURM_JOB_ID}.txt" \
-        --batch_size ${BATCH_SIZE}
+        --batch_size ${BATCH_SIZE} \
+        --generator_method "${generator_method}" \
+        --compare_method "${compare_method}"
+        # --results_path "${OUTPUT_DIR}/pe_tabula_result_${SLURM_JOB_ID}.txt" \
 
     end_time=$(date +%s)
     end_time_readable=$(date)
@@ -140,7 +153,7 @@ fi
 python -u "${TMP_PROJECT_DIR}/src/evaluation/eval.py" \
     --epochs "$epochs" \
     --metadata_path "${TMP_DATA_DIR}/${dataset}/metadata.json" \
-    --priv_train_csv "${TMP_PROJECT_DIR}/data/processed/${dataset}/${seed}/data_train.csv" \
+    --priv_train_csv "${TMP_DATA_DIR}/processed/${dataset}/${seed}/data_train.csv" \
     --priv_val_csv "${TMP_DATA_DIR}/processed/${dataset}/${seed}/data_val.csv" \
     --priv_test_csv "${TMP_DATA_DIR}/processed/${dataset}/${seed}/data_test.csv" \
     --synthetic_data_dir "$TMP_OUTPUT_DIR" \

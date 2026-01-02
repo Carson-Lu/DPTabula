@@ -5,3 +5,5 @@ __pycache__/
 .env
 env
 ENV
+cc_env
+WHEELS
