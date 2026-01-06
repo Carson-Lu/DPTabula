@@ -22,13 +22,13 @@ num_variations=3
 variance_multiplier=0.5
 epsilon=1.0
 seed=42
-classifier="tabicl"
+classifier="xgboost"
 eval_only=false
 decay_type="polynomial"
 gamma=0.2
 BATCH_SIZE=4
 generator_method="tabpe"
-compare_method="tabpe"
+compare_method="tabula"
 
 while [[ "$#" -gt 0 ]]; do
     case $1 in
@@ -64,6 +64,8 @@ TMP_OUTPUT_DIR=${TMP_PROJECT_DIR}/outputs
 
 module purge
 module load python/3.11
+export HF_HUB_OFFLINE=1
+export TRANSFORMERS_OFFLINE=1
 # TODO update path when compute canada adds wheel for autodp
 #source ~/tabpe/ENV/bin/activate
 source /home/carson/DPTabula/tabpe/ENV/bin/activate
@@ -75,7 +77,10 @@ rsync -a --exclude=".git" "${PROJECT_DIR}/" "${TMP_PROJECT_DIR}/"
 cd "${TMP_PROJECT_DIR}" || exit
 echo "Project copied to ${PWD}"
 
-if [[ "$generator_method" == "tabpe" || "$compare_method" == "tabpe" ]]; then
+export PYTHONPATH="${TMP_PROJECT_DIR}:${PYTHONPATH}"
+echo "PYTHONPATH set to: ${PYTHONPATH}"
+
+if [[ "$generator_method" != "tabpe" || "$compare_method" != "tabpe" ]]; then
     rsync -a "${MODEL_SRC}/" "${TMP_MODEL_DIR}/"
     echo "Model copied to ${TMP_MODEL_DIR}"
 else
@@ -83,7 +88,7 @@ else
 fi
 
 mkdir -p "${TMP_OUTPUT_DIR}"
-OUTPUT_DIR="${RESULTS_DIR}/${dataset}/${seed}/pe/eps_${epsilon}_ns_${num_samples}_e_${epochs}_se_${sampling_epochs}_v_${num_variations}_vm_${variance_multiplier}_dt_${decay_type}_gamma_${gamma}"
+OUTPUT_DIR="${RESULTS_DIR}/${SLURM_JOB_ID}/${dataset}/${seed}/pe/eps_${epsilon}_ns_${num_samples}_e_${epochs}_se_${sampling_epochs}_v_${num_variations}_vm_${variance_multiplier}_dt_${decay_type}_gamma_${gamma}"
 mkdir -p "$OUTPUT_DIR"
 
 # Note that this copies the data to SCRATCH (so we save the split rather than just in TMPDIR)
@@ -111,7 +116,7 @@ if [[ "$eval_only" == false ]]; then
         --variance_multiplier "$variance_multiplier" \
         --decay_type "$decay_type" \
         --gamma "$gamma" \
-        --output_dir "/home/carson/scratch/logs" \
+        --output_dir "/home/carson/scratch/logs/tabpe/${dataset}/generator-${generator_method}_compare-${compare_method}_seed-${seed}" \
         --epsilon "$epsilon" \
         --model_path "${TMP_MODEL_DIR}" \
         --batch_size ${BATCH_SIZE} \
@@ -144,24 +149,34 @@ Parameters:
 - Num variations: $num_variations
 - Epsilon: $epsilon
 - Seed: $seed
+- generator_method: $generator_method
+- compare_method: $compare_method
 EOF
 
-echo "Timing information saved to: $output_dir/timing.txt"
+echo "Timing information saved to: ${OUTPUT_DIR}/timing.txt"
 fi
 
 # ----- Run evaluation -----
+echo -e "\nRunning Evaluation ==============================================================="
+echo -e "Compare method using ${compare_method}"
 python -u "${TMP_PROJECT_DIR}/src/evaluation/eval.py" \
     --epochs "$epochs" \
     --metadata_path "${TMP_DATA_DIR}/${dataset}/metadata.json" \
-    --priv_train_csv "${TMP_DATA_DIR}/processed/${dataset}/${seed}/data_train.csv" \
-    --priv_val_csv "${TMP_DATA_DIR}/processed/${dataset}/${seed}/data_val.csv" \
-    --priv_test_csv "${TMP_DATA_DIR}/processed/${dataset}/${seed}/data_test.csv" \
-    --synthetic_data_dir "$TMP_OUTPUT_DIR" \
+    --priv_train_csv "${TMP_DATA_DIR}/${dataset}/processed/${dataset}/${seed}/data_train.csv" \
+    --priv_val_csv "${TMP_DATA_DIR}/${dataset}/processed/${dataset}/${seed}/data_val.csv" \
+    --priv_test_csv "${TMP_DATA_DIR}/${dataset}/processed/${dataset}/${seed}/data_test.csv" \
+    --synthetic_data_dir "/home/carson/scratch/logs/tabpe/${dataset}/generator-${generator_method}_compare-${compare_method}_seed-${seed}" \
     --classifier "$classifier"
+
+echo -e "eval.py completed, now running eval_embedding.py ==============================================================="
 
 python -u "${TMP_PROJECT_DIR}/src/evaluation/eval_embedding.py" \
     --dataset "$dataset" \
     --seed "$seed" \
-    --synthetic_dir "$TMP_OUTPUT_DIR"
+    --metadata_path "${TMP_DATA_DIR}/${dataset}/metadata.json" \
+    --priv_train_csv "${TMP_DATA_DIR}/${dataset}/processed/${dataset}/${seed}/data_train.csv" \
+    --priv_val_csv "${TMP_DATA_DIR}/${dataset}/processed/${dataset}/${seed}/data_val.csv" \
+    --priv_test_csv "${TMP_DATA_DIR}/${dataset}/processed/${dataset}/${seed}/data_test.csv" \
+    --synthetic_dir "/home/carson/scratch/logs/tabpe/${dataset}/generator-${generator_method}_compare-${compare_method}_seed-${seed}" \
 
 echo "Done! Results saved to $OUTPUT_DIR"

@@ -76,6 +76,8 @@ def main(args):
     # ADDED ==============================================================
     model_path = args.model_path
     batch_size = args.batch_size
+    generator_method = args.generator_method
+    compare_method = args.compare_method
 
     seed = 42
     torch.manual_seed(seed)

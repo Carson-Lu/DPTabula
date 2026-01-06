@@ -241,12 +241,12 @@ def main(args):
     console.setFormatter(logging.Formatter('%(asctime)s - %(message)s', datefmt='%d-%b-%y %H:%M:%S'))
     logging.getLogger().addHandler(console)
 
-
-    df_real_train = pd.read_csv(f"data/processed/{dataset}/{seed}/data_train.csv")
-    df_real_val = pd.read_csv(f"data/processed/{dataset}/{seed}/data_val.csv")
-    df_real_test = pd.read_csv(f"data/processed/{dataset}/{seed}/data_test.csv")
-
-    metadata = json.load(open(f"data/{dataset}/metadata.json"))
+    # START OF CHANGES: UPDATED PATHS
+    df_real_train = pd.read_csv(args.priv_train_csv)
+    df_real_val = pd.read_csv(args.priv_val_csv)
+    df_real_test = pd.read_csv(args.priv_test_csv)
+    metadata = json.load(open(f"{args.metadata_path}"))
+    # END OF CHANGED
     target_col = metadata["label"]
     
     y_real_train = df_real_train[target_col]
@@ -322,6 +322,10 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--dataset", type=str, required=True)
     parser.add_argument("--seed", type=int, required=True)
+    parser.add_argument('--metadata_path', default=None, type=str, help='Path to metadata file')
+    parser.add_argument('--priv_train_csv', default=None, type=str, help='Path to private training data file')
+    parser.add_argument('--priv_val_csv', default=None, type=str, help='Path to private validation data file')
+    parser.add_argument('--priv_test_csv', default=None, type=str, help='Path to private test data file')
     parser.add_argument("--synthetic_dir", type=str, required=True)
     args = parser.parse_args()
     main(args)
