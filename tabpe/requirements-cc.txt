@@ -1,22 +1,36 @@
 absl_py==2.3.1+computecanada
 aiofiles==24.1.0+computecanada
 alembic==1.16.5+computecanada
+annotated_types==0.7.0+computecanada
+autodp==0.2.3.1+computecanada
+backoff==2.2.1+computecanada
 catboost==1.2.7+computecanada
 category_encoders==2.8.0+computecanada
+certifi==2025.11.12+computecanada
+charset_normalizer==3.4.4+computecanada
 chex==0.1.90+computecanada
+click==8.3.1+computecanada
 colorlog==6.9.0+computecanada
 contourpy==1.3.1+computecanada
 cupy==13.6.0+computecanada
 cycler==0.12.1+computecanada
+distro==1.9.0+computecanada
+einops==0.8.1+computecanada
 etils==1.13.0+computecanada
+# eval_type_backport==0.3.1
 fastrlock==0.8.1+computecanada
 filelock==3.20.1+computecanada
 flax==0.11.2+computecanada
 fonttools==4.61.1+computecanada
 fsspec==2025.12.0+computecanada
+gitdb==4.0.12+computecanada
+gitpython==3.1.46+computecanada
 graphviz==0.21+computecanada
 greenlet==3.2.4+computecanada
+hf_xet==1.2.0+computecanada
+huggingface_hub==0.36.0+computecanada
 humanize==4.14.0+computecanada
+idna==3.11+computecanada
 importlib_resources==6.5.2+computecanada
 jax==0.6.0+computecanada
 jaxlib==0.6.0+computecanada
@@ -45,34 +59,56 @@ packaging==25.0+computecanada
 pandas==2.3.3+computecanada
 patsy==1.0.2+computecanada
 pillow==11.1.0+computecanada
+platformdirs==4.5.0+computecanada
 plotly==6.4.0+computecanada
+# posthog==6.9.3
+prdc @ file:///home/carson/DPTabula/tabpe/WHEELS/prdc-0.2-py3-none-any.whl#sha256=570ae82fb57a0b0ea3e6a131354a61e23aca79716b77cb9917f3a98465b72120
 protobuf==6.33.2+computecanada
+psutil==7.0.0+computecanada
+pydantic==2.12.5+computecanada
+pydantic_core==2.41.5+computecanada
+pydantic_settings==2.12.0+computecanada
 pygments==2.19.2+computecanada
 pynvml==12.0.0+computecanada
 pyparsing==3.2.5+computecanada
 python_dateutil==2.9.0.post0+computecanada
+python_dotenv==1.2.1+computecanada
 pytz==2025.2+computecanada
 PyYAML==6.0.2+computecanada
+regex==2024.11.6+computecanada
+requests==2.32.5+computecanada
 rich==14.2.0+computecanada
+# ruff==0.14.10
+safetensors==0.5.3+computecanada
 scikit_learn==1.7.1+computecanada
 scipy==1.16.2+computecanada
 seaborn==0.13.2+computecanada
+sentry_sdk==2.48.0+computecanada
 simplejson==3.20.2+computecanada
 six==1.17.0+computecanada
 skorch==1.1.0+computecanada
+smmap==5.0.2+computecanada
 SQLAlchemy==2.0.43+computecanada
 statsmodels==0.14.5+computecanada
 sympy==1.14.0+computecanada
+tabicl @ file:///home/carson/DPTabula/tabpe/WHEELS/tabicl-0.1.4-py3-none-any.whl#sha256=10dcaec46e9e2ba37adb3c1c386f53253f210bbc2894af2e6d0506131c0abdcc
+# tabpfn @ file:///home/carson/DPTabula/tabpe/WHEELS/tabpfn-6.2.0-py3-none-any.whl#sha256=aa3de1c30c86a0a0ac4147c4b6ce79ed12a0ad6facccff41f9927db17407ed96
+# tabpfn-common-utils==0.2.13
 tabulate==0.9.0+computecanada
 tensorstore==0.1.76+computecanada
 threadpoolctl==3.6.0+computecanada
+tokenizers==0.22.1+computecanada
 tomli==2.2.1+computecanada
 tomli_w==1.2.0+computecanada
 toolz==1.1.0+computecanada
 torch==2.9.1+computecanada
 tqdm==4.67.1+computecanada
+transformers==4.57.3+computecanada
 treescope==0.1.10+computecanada
 typing_extensions==4.15.0+computecanada
+typing_inspection==0.4.2+computecanada
 tzdata==2025.3+computecanada
+urllib3==2.6.2+computecanada
+wandb==0.21.2+computecanada
 xgboost==3.0.2+computecanada
 zipp==3.23.0+computecanada

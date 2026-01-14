@@ -42,6 +42,43 @@ def find_required_noise_multiplier(epsilon, num_steps, num_N):
     assert(-output.fun < epsilon)
     return output.x[0]
 
+def get_vector(s, columns, info):
+    vector = []
+
+    for i, c in enumerate(columns["numerical"] + columns["categorical"]):
+        if c in columns["numerical"]:
+            vector.append((s[i] - info[c]['min']) / (info[c]['max'] - info[c]['min']))
+        else:
+            vector_add = [0.0] * len(info[c])
+            vector_add[info[c][s[i]]] = 1.0 / 3.0
+            vector += vector_add
+    return vector
+
+# MODIFIED =========================================================
+def tabpe_get_embeddings(samples, columns, info):
+    return np.array([get_vector(s, columns, info) for s in samples])
+
+def vote(public, private, count, noise_multiplier, embed_fn):
+    public_embeddings = embed_fn(public)
+    private_embeddings = embed_fn(private)
+
+    distances = torch.cdist(
+        torch.tensor(private_embeddings),
+        torch.tensor(public_embeddings)
+    ).cpu().numpy()
+
+    votes_embeddings = distances.argmin(axis=1).tolist()
+    histogram = [0 for _ in range(len(public))]
+    for v in votes_embeddings:
+        histogram[v] += 1
+    noisy_histogram = [h + np.random.normal(0, noise_multiplier) for h in histogram]
+    public_best = []
+    for i in np.argsort(noisy_histogram)[::-1][:count]:
+        public_best.append(public[i])
+    return public_best, histogram, noisy_histogram
+
+# END OF MODIFIED ==================================================
+
 def try_float(x):
     try:
         return float(x)
@@ -72,70 +109,49 @@ def parse_args():
 
     return args
 
+class LLMEmbedder:
+    def __init__(self, model_path, batch_size):
+        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        self.batch_size = batch_size
+
+        self.tokenizer = AutoTokenizer.from_pretrained(
+            model_path,
+            local_files_only=True,
+            trust_remote_code=True
+        )
+        self.tokenizer.pad_token = self.tokenizer.eos_token
+
+        self.model = AutoModel.from_pretrained(
+            model_path,
+            local_files_only=True,
+            trust_remote_code=True
+        ).to(self.device)
+
+        self.model.eval()
+
+    def embed(self, samples, columns):
+        df = pd.DataFrame(samples, columns=columns)
+        embeddings = []
+
+        for i in range(0, len(df), self.batch_size):
+            batch = df.iloc[i:i+self.batch_size]
+            texts = [", ".join(f"{c}: {v}" for c, v in row.items()) for _, row in batch.iterrows()]
+
+            inputs = self.tokenizer(texts, return_tensors="pt", padding=True, truncation=True).to(self.device)
+            with torch.inference_mode():
+                emb = self.model(**inputs).last_hidden_state.mean(dim=1)
+
+            embeddings.append(emb.cpu().numpy())
+            del inputs, emb
+            torch.cuda.empty_cache()
+
+        return np.vstack(embeddings)
+
 def main(args):
     # ADDED ==============================================================
-    model_path = args.model_path
-    batch_size = args.batch_size
-    generator_method = args.generator_method
-    compare_method = args.compare_method
-
     seed = 42
     torch.manual_seed(seed)
     np.random.seed(seed)
-
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    print(f"Using device: {device}")
-
-    tokenizer = AutoTokenizer.from_pretrained(model_path, local_files_only=True, trust_remote_code=True)
-    tokenizer.pad_token = tokenizer.eos_token
-    model = AutoModel.from_pretrained(
-        model_path, local_files_only=True, trust_remote_code=True
-    ).to(device, dtype=torch.float16)
-    model.eval()
-    print("Model loaded successfully.")
-
-    def embed_batch(df_batch):
-        texts = [", ".join(f"{c}: {v}" for c, v in row.items()) for _, row in df_batch.iterrows()]
-        inputs = tokenizer(texts, return_tensors="pt", padding=True, truncation=True).to(device)
-        with torch.inference_mode():
-            emb = model(**inputs).last_hidden_state.mean(dim=1)
-        emb_np = emb.cpu().numpy()
-        del inputs, emb
-        torch.cuda.empty_cache()
-        return emb_np
-
-    def get_embeddings(X_df):
-        embeddings = []
-        total = len(X_df)
-        for i in range(0, total, batch_size):
-            batch = X_df.iloc[i:i+batch_size]
-            embeddings.append(embed_batch(batch))
-        return np.vstack(embeddings)
-
-    def samples_to_df(samples, columns):
-        return pd.DataFrame(samples, columns=columns)
-
-    def vote(public_samples, private_samples, count, noise_multiplier):
-        all_columns = columns["numerical"] + columns["categorical"]
-        public_df = samples_to_df(public_samples, all_columns)
-        private_df = samples_to_df(private_samples, all_columns)
-
-        public_embeddings = get_embeddings(public_df)
-        private_embeddings = get_embeddings(private_df)
-
-        distances = torch.cdist(torch.Tensor(private_embeddings), torch.Tensor(public_embeddings)).cpu().numpy()
-        
-        votes_embeddings = distances.argmin(axis=1).tolist()
-        
-        histogram = [0 for _ in range(len(public_samples))]
-        for v in votes_embeddings:
-            histogram[v] += 1
-        noisy_histogram = [h + np.random.normal(0, noise_multiplier) for h in histogram]
-        public_best = []
-        for i in np.argsort(noisy_histogram)[::-1][:count]:
-            public_best.append(public_samples[i])
-        return public_best, histogram, noisy_histogram
-
     # END OF ADDED ========================================================
 
     with open(args.metadata_path, 'r') as f:
@@ -222,6 +238,24 @@ def main(args):
                 label = row[columns["label"]]
                 values = [float(row[c]) for c in columns["numerical"]] + [row[c] for c in columns["categorical"]]
                 public[label].append(values)
+    
+    # ADDED ===============================================================
+    all_columns = columns["numerical"] + columns["categorical"]
+
+    if args.compare_method == "tabpe":
+        logging.info("Using TabPE embedding backend")
+
+        def embed_fn(samples):
+            return tabpe_get_embeddings(samples, columns, info)
+
+    else:
+        logging.info("Using LLM embedding backend")
+
+        embedder = LLMEmbedder(args.model_path, args.batch_size)
+
+        def embed_fn(samples):
+            return embedder.embed(samples, all_columns)
+    # END OF ADDED ========================================================
 
     histograms = {}
     for epoch in tqdm(range(max(e, 1), 1 + args.epochs), desc="Epochs"):
@@ -272,16 +306,10 @@ def main(args):
                 # denoise vote counts
                 # Calculate distances and get vote counts
 
-                # TODO UPDATE HERE
-                all_cols = columns["numerical"] + columns["categorical"]
-                label_df = pd.DataFrame(label_public, columns=all_cols)
-                private_df = pd.DataFrame(label_private, columns=all_cols)
-
-                label_embeddings = get_embeddings(label_df)
-                private_embeddings = get_embeddings(private_df)
+                label_embeddings = embed_fn(label_public)
+                private_embeddings = embed_fn(label_private)
                 distances = torch.cdist(torch.Tensor(private_embeddings), torch.Tensor(label_embeddings)).cpu().numpy()
                 votes_embeddings = distances.argmin(axis=1).tolist()
-                # END
                 
                 # Count votes for each public sample
                 clean_vote_counts = [0 for _ in range(len(label_public))]
@@ -331,7 +359,8 @@ def main(args):
                     public_with_variations, 
                     label_private, 
                     len(label_public),
-                    noise_multiplier
+                    noise_multiplier,
+                    embed_fn # ADDED
                 )
                 
                 # Store histograms

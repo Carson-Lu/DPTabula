@@ -66,9 +66,6 @@ module purge
 module load python/3.11
 export HF_HUB_OFFLINE=1
 export TRANSFORMERS_OFFLINE=1
-# TODO update path when compute canada adds wheel for autodp
-#source ~/tabpe/ENV/bin/activate
-source /home/carson/DPTabula/tabpe/ENV/bin/activate
 
 cd "${SLURM_TMPDIR}" || exit
 echo "Current directory: ${SLURM_TMPDIR}"
@@ -76,6 +73,12 @@ echo "Current directory: ${SLURM_TMPDIR}"
 rsync -a --exclude=".git" "${PROJECT_DIR}/" "${TMP_PROJECT_DIR}/"
 cd "${TMP_PROJECT_DIR}" || exit
 echo "Project copied to ${PWD}"
+
+virtualenv --no-download $SLURM_TMPDIR/env
+source $SLURM_TMPDIR/env/bin/activate
+pip install --no-index --upgrade pip
+pip install --no-index -r requirements-cc.txt
+#source /home/carson/DPTabula/tabpe/ENV/bin/activate
 
 export PYTHONPATH="${TMP_PROJECT_DIR}:${PYTHONPATH}"
 echo "PYTHONPATH set to: ${PYTHONPATH}"
@@ -122,7 +125,6 @@ if [[ "$eval_only" == false ]]; then
         --batch_size ${BATCH_SIZE} \
         --generator_method "${generator_method}" \
         --compare_method "${compare_method}"
-        # --results_path "${OUTPUT_DIR}/pe_tabula_result_${SLURM_JOB_ID}.txt" \
 
     end_time=$(date +%s)
     end_time_readable=$(date)
