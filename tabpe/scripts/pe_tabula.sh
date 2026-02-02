@@ -4,7 +4,7 @@
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=1
 #SBATCH --mem=64G
-#SBATCH --time=4:00:00
+#SBATCH --time=1:00:00
 #SBATCH --gres=gpu:a100:1 
 #SBATCH --mail-user=clu56@student.ubc.ca
 #SBATCH --mail-type=FAIL
@@ -22,7 +22,7 @@ num_variations=3
 variance_multiplier=0.5
 epsilon=1.0
 seed=42
-classifier="xgboost"
+classifier="tabicl"
 eval_only=false
 decay_type="polynomial"
 gamma=0.2

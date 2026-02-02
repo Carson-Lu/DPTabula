@@ -1,4 +1,6 @@
 import os
+os.environ["TRANSFORMERS_OFFLINE"] = "1"
+os.environ["HF_HUB_OFFLINE"] = "1"
 import json
 import argparse
 import matplotlib.pyplot as plt
@@ -13,7 +15,7 @@ import torch
 from itertools import combinations
 import logging
 import sys
-from tabpfn import TabPFNClassifier
+# from tabpfn import TabPFNClassifier
 from tabicl import TabICLClassifier
 from sklearn.metrics import accuracy_score, roc_auc_score, f1_score
 from prdc import compute_prdc
@@ -75,7 +77,9 @@ def run_classifier(df_train, df_test, columns, classifier='xgboost'):
             indices = np.random.choice(len(X_train), 10000, replace=False)
             X_train, y_train = X_train[indices], y_train[indices]
     elif classifier == 'tabicl':
-        model = TabICLClassifier()
+        # model = TabICLClassifier()
+        model_path = "/home/carson/scratch/TabICL/models--jingang--TabICL-clf/snapshots/eaf789a9b25ee8486d6f48997ba076f850bbc30b/tabicl-classifier-v1.1-0506.ckpt"
+        model = TabICLClassifier(model_path=model_path)  # instantiate with local path
         if len(X_train) > 60000:
             np.random.seed(42)
             indices = np.random.choice(len(X_train), 60000, replace=False)
