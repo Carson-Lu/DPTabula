@@ -1,9 +1,9 @@
 #!/bin/bash
-#SBATCH --job-name=pe_tabula
+#SBATCH --job-name=pe_kmeans
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=1
-#SBATCH --mem=64G
+#SBATCH --mem=32G
 #SBATCH --time=3:00:00
 #SBATCH --gres=gpu:a100:1 
 #SBATCH --mail-user=clu56@student.ubc.ca
@@ -115,7 +115,7 @@ if [[ "$eval_only" == false ]]; then
     start_time=$(date +%s)
     start_time_readable=$(date)
     echo "Starting PE execution at: $start_time_readable"
-    python -u "${TMP_PROJECT_DIR}/src/model/pe/rw_main_tabula.py" \
+    python -u "${TMP_PROJECT_DIR}/src/model/pe/rw_main_kmeans.py" \
         --epochs "$epochs" \
         --sampling_epochs "$sampling_epochs" \
         --priv_train_csv "${TMP_DATA_DIR}/${dataset}/processed/${dataset}/${seed}/data_train.csv" \

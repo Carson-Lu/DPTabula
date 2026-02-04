@@ -33,23 +33,20 @@ fi
 
 
 # Step 2: Generate metadata.json
-if [[ -f "$METADATA_FILE" ]]; then
-    echo "Step 2: metadata.json already exists at $METADATA_FILE, skipping."
-else
-    echo "Step 2: Generating metadata.json"
+echo "Step 2: Generating metadata.json"
 
-    CMD="python /home/carson/DPTabula/tabpe/src/data_processing/csv_to_metadata.py \
-        --data $DATASET \
-        --max_unique_ratio $MAX_UNIQUE_RATIO"
+CMD="python /home/carson/DPTabula/tabpe/src/data_processing/csv_to_metadata.py \
+    --data $DATASET \
+    --max_unique_ratio $MAX_UNIQUE_RATIO"
 
-    # Only pass label_column if it's not empty
-    if [[ -n "$LABEL_COLUMN" ]]; then
-        CMD="$CMD --label_column $LABEL_COLUMN"
-    fi
-
-    echo "Running: $CMD"
-    $CMD || { echo "csv_to_metadata.py failed"; exit 1; }
+# Only pass label_column if it's not empty
+if [[ -n "$LABEL_COLUMN" ]]; then
+    CMD="$CMD --label_column $LABEL_COLUMN"
 fi
+
+echo "Running: $CMD"
+$CMD || { echo "csv_to_metadata.py failed"; exit 1; }
+
 
 echo "Preprocessing complete!"
 echo "CSV: $CSV_FILE"
