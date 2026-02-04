@@ -4,7 +4,7 @@
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=1
 #SBATCH --mem=64G
-#SBATCH --time=1:00:00
+#SBATCH --time=3:00:00
 #SBATCH --gres=gpu:a100:1 
 #SBATCH --mail-user=clu56@student.ubc.ca
 #SBATCH --mail-type=FAIL
@@ -98,6 +98,12 @@ mkdir -p "$OUTPUT_DIR"
 echo "Running data split"
 bash "${TMP_PROJECT_DIR}/scripts/data-split.sh" --dataset "$dataset" --seed "$seed"
 echo "Data split completed"
+
+# if [[ "$generator_method" != "tabpe" || "$compare_method" != "tabpe" ]]; then
+#     echo "Running embedding"
+#     bash "${TMP_PROJECT_DIR}/scripts/tabula_embeddings.sh" --dataset "$dataset" --seed "$seed"
+#     echo "Data split completed"
+# fi
 
 mkdir -p "${TMP_DATA_DIR}/${dataset}"
 rsync -a "${DATA_SRC}/" "${TMP_DATA_DIR}/${dataset}/"

@@ -1,10 +1,22 @@
 import scipy.io
 import pandas as pd
 import os
+import argparse
 
-# Paths
-mat_file = '/home/carson/scratch/data_tabpe/BASEHOCK/BASEHOCK.mat'
-csv_file = '/home/carson/scratch/data_tabpe/BASEHOCK/BASEHOCK.csv'
+# ===== Defaults =====
+default_data = "BASEHOCK"
+base_path = "/home/carson/scratch/data_tabpe"
+
+# ===== Argument parser =====
+parser = argparse.ArgumentParser(description="Convert .mat dataset to CSV")
+parser.add_argument("--data", default=default_data, help="Dataset name (folder & file base name)")
+args = parser.parse_args()
+
+data_name = args.data
+
+# Build paths dynamically
+mat_file = os.path.join(base_path, data_name, f"{data_name}.mat")
+csv_file = os.path.join(base_path, data_name, f"{data_name}.csv")
 os.makedirs(os.path.dirname(csv_file), exist_ok=True)
 
 # Load .mat file
@@ -18,7 +30,7 @@ if X is None:
 
 # Convert sparse matrix to dense if needed
 if hasattr(X, "todense"):
-    X = X.todense()  # now X is a regular numpy matrix
+    X = X.todense()
 elif hasattr(X, "toarray"):
     X = X.toarray()
 
@@ -31,9 +43,7 @@ if y is None:
 
 y = pd.DataFrame(y, columns=['label'])
 
-# Combine
+# Combine and save
 df = pd.concat([X, y], axis=1)
-
-# Save CSV
 df.to_csv(csv_file, index=False)
 print(f"Saved CSV: {csv_file} (shape={df.shape})")

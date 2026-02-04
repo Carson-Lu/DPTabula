@@ -300,6 +300,7 @@ def main(args):
             # Get vote counts for this label's samples
             label_public = public[label]
             label_private = private[label]
+            private_embeddings = embed_fn(label_private)
             
             if epoch <= args.sampling_epochs:
                 # PE1 with sampling
@@ -307,7 +308,6 @@ def main(args):
                 # Calculate distances and get vote counts
 
                 label_embeddings = embed_fn(label_public)
-                private_embeddings = embed_fn(label_private)
                 distances = torch.cdist(torch.Tensor(private_embeddings), torch.Tensor(label_embeddings)).cpu().numpy()
                 votes_embeddings = distances.argmin(axis=1).tolist()
                 
