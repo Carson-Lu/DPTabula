@@ -14,6 +14,8 @@ from tqdm import tqdm
 from collections import defaultdict
 from pathlib import Path
 from transformers import AutoModel, AutoTokenizer
+from sklearn.cluster import KMeans
+from sklearn.metrics import calinski_harabasz_score
 
 import logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(message)s', datefmt='%d-%b-%y %H:%M:%S')
@@ -58,34 +60,23 @@ def get_vector(s, columns, info):
 def tabpe_get_embeddings(samples, columns, info):
     return np.array([get_vector(s, columns, info) for s in samples])
 
-def vote(public, public_embeddings, private_embeddings, count, noise_multiplier, chunk_size=1024):
-    device = torch.device("cuda")
+def vote(public, private, count, noise_multiplier, embed_fn):
+    public_embeddings = embed_fn(public)
+    private_embeddings = embed_fn(private)
 
-    public_t = torch.from_numpy(public_embeddings).to(device)
+    distances = torch.cdist(
+        torch.tensor(private_embeddings),
+        torch.tensor(public_embeddings)
+    ).cpu().numpy()
 
-    num_public = len(public_embeddings)
-    histogram = np.zeros(num_public, dtype=np.int64)
-
-    for i in range(0, len(private_embeddings), chunk_size):
-        private_chunk = torch.from_numpy(
-            private_embeddings[i:i+chunk_size]
-        ).to(device)
-
-        distances = torch.cdist(private_chunk, public_t)
-        votes = distances.argmin(dim=1).cpu().numpy()
-
-        np.add.at(histogram, votes, 1)
-
-        del distances, private_chunk
-
-    noisy_histogram = histogram + np.random.normal(0, noise_multiplier, size=num_public)
+    votes_embeddings = distances.argmin(axis=1).tolist()
+    histogram = [0 for _ in range(len(public))]
+    for v in votes_embeddings:
+        histogram[v] += 1
+    noisy_histogram = [h + np.random.normal(0, noise_multiplier) for h in histogram]
     public_best = []
     for i in np.argsort(noisy_histogram)[::-1][:count]:
         public_best.append(public[i])
-        
-    del public_t
-    torch.cuda.empty_cache()
-        
     return public_best, histogram, noisy_histogram
 
 # END OF MODIFIED ==================================================
@@ -163,7 +154,6 @@ def main(args):
     seed = 42
     torch.manual_seed(seed)
     np.random.seed(seed)
-    random.seed(seed)
     # END OF ADDED ========================================================
 
     with open(args.metadata_path, 'r') as f:
@@ -269,11 +259,6 @@ def main(args):
             return embedder.embed(samples, all_columns)
     # END OF ADDED ========================================================
 
-    private_embedding_cache = {
-        label: embed_fn(private[label])
-        for label in private
-    }
-
     histograms = {}
     for epoch in tqdm(range(max(e, 1), 1 + args.epochs), desc="Epochs"):
         def linear_range(epoch_, T, base, floor=0.02):
@@ -316,33 +301,23 @@ def main(args):
         for label in public:
             # Get vote counts for this label's samples
             label_public = public[label]
-            label_private_embeddings = private_embedding_cache[label]
+            label_private = private[label]
+            private_embeddings = embed_fn(label_private)
             
             if epoch <= args.sampling_epochs:
                 # PE1 with sampling
                 # denoise vote counts
                 # Calculate distances and get vote counts
 
-                label_public_embeddings = embed_fn(label_public)
-                device = torch.device("cuda")
-
-                private_tensor = torch.tensor(label_private_embeddings, device=device, dtype=torch.float32)
-                public_tensor  = torch.tensor(label_public_embeddings, device=device, dtype=torch.float32)
-                votes_embeddings = []
-
-                chunk_size = 1024
-                for i in range(0, len(private_tensor), chunk_size):
-                    private_chunk = private_tensor[i:i+chunk_size]  # GPU tensor
-                    distances = torch.cdist(private_chunk, public_tensor)  # stays on GPU
-                    votes_chunk = distances.argmin(dim=1)              # stays on GPU
-                    votes_embeddings.append(votes_chunk)
-
-                votes_embeddings = torch.cat(votes_embeddings).cpu().numpy().tolist()
-
+                label_embeddings = embed_fn(label_public)
+                distances = torch.cdist(torch.Tensor(private_embeddings), torch.Tensor(label_embeddings)).cpu().numpy()
+                votes_embeddings = distances.argmin(axis=1).tolist()
+                
                 # Count votes for each public sample
-                votes_tensor = torch.tensor(votes_embeddings, device=device)
-                clean_vote_counts = torch.bincount(votes_tensor, minlength=len(label_public)).cpu().numpy()
-
+                clean_vote_counts = [0 for _ in range(len(label_public))]
+                for v in votes_embeddings:
+                    clean_vote_counts[v] += 1
+                
                 # Add noise to vote counts if dp is enabled
                 if noise_multiplier > 0:
                     vote_counts = [h + np.random.normal(0, noise_multiplier) for h in clean_vote_counts]
@@ -373,9 +348,6 @@ def main(args):
                     'clean': clean_vote_counts,
                     'noisy': vote_counts
                 }
-                
-                del private_tensor, public_tensor
-                torch.cuda.empty_cache()
             else:
                 # PE with ranking selection
                 # Generate variations for all samples
@@ -386,12 +358,11 @@ def main(args):
                 
                 # Then use vote function to select best samples
                 public_new[label], clean_histogram, noisy_histogram = vote(
-                    label_public,
-                    label_public_embeddings,
-                    label_private_embeddings, 
+                    public_with_variations, 
+                    label_private, 
                     len(label_public),
                     noise_multiplier,
-                    chunk_size=1024
+                    embed_fn # ADDED
                 )
                 
                 # Store histograms
@@ -423,3 +394,57 @@ if __name__ == "__main__":
     args = parse_args()
     print(args)
     main(args)
+
+
+
+def dp_resample_synthetic(
+    syn_data,
+    real_data,
+    num_synthetic_samples,
+    num_clusters=None, # cluster_selection == ch_index will ignore this
+    cluster_selection="fixed", # Fixed or classes
+    max_K=1000,
+    epsilon=1.0,
+    delta=1e-5
+):
+    if cluster_selection == "classes": # LINE 1
+        if num_clusters is None:
+            raise ValueError("n_classes must be provided for cluster_selection='classes'")
+        K = num_clusters
+    elif cluster_selection == "ch_index":
+        best_score = -np.inf
+        best_K = 2
+        for k in range(2, min(max_K, len(syn_data)) + 1):
+            labels = KMeans(n_clusters=k, random_state=0).fit_predict(syn_data)
+            score = calinski_harabasz_score(syn_data, labels)
+            if score > best_score:
+                best_score = score
+                best_K = k
+        K = best_K
+    else:
+        K = num_clusters if num_clusters else 10
+
+    # K-means on synthetic embeddings
+    kmeans = KMeans(n_clusters=K, random_state=0).fit(syn_data)
+    clusters = kmeans.labels_
+    centroids = kmeans.cluster_centers_
+
+    # LINE 3-8
+    h = np.zeros(K)
+    for e in real_data:
+        h[np.argmin(np.linalg.norm(e - centroids, axis=1))] += 1
+
+    sigma = np.sqrt(2 * np.log(1.25 / delta)) / epsilon
+    noisy_h = np.maximum(h + np.random.normal(0, sigma, size=K), 0)
+    p = noisy_h / noisy_h.sum()
+
+    # LINE 9-14
+    sampled_indices = []
+    for k in range(K):
+        cluster_idx = np.where(clusters == k)[0]
+        n_samples = int(np.floor(num_synthetic_samples * p[k]))
+        if n_samples > 0 and len(cluster_idx) > 0:
+            replace = n_samples > len(cluster_idx)
+            sampled_indices.extend(np.random.choice(cluster_idx, n_samples, replace=replace))
+
+    return p, sampled_indices
