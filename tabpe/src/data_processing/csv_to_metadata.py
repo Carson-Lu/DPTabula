@@ -5,12 +5,12 @@ import os
 
 # ===== Defaults =====
 default_data = "BASEHOCK"
-default_max_unique_ratio = 0.00
+default_max_unique_ratio = 0.01
 default_label_column = None  # None = use last column
 base_path = "/home/carson/scratch/data_tabpe"
 # ===================
 
-def generate_metadata(csv_path, output_path, label_column=None, max_unique_ratio=0.00):
+def generate_metadata(csv_path, output_path, label_column=None, max_unique_ratio=0.01, hard_limit = 30):
     df = pd.read_csv(csv_path)
     
     # Default label = last column if not specified
@@ -27,7 +27,8 @@ def generate_metadata(csv_path, output_path, label_column=None, max_unique_ratio
             categorical_cols.append(col)
         elif pd.api.types.is_numeric_dtype(df[col]):
             # Treat numeric as categorical if few unique values
-            if df[col].nunique() / len(df) < max_unique_ratio:
+            num_unique = df[col].nunique()
+            if num_unique < hard_limit or (num_unique / len(df)) < max_unique_ratio:
                 categorical_cols.append(col)
             else:
                 numerical_cols.append(col)

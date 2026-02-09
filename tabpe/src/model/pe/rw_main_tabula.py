@@ -115,6 +115,7 @@ def parse_args():
     parser.add_argument('--batch_size', type=int, default=4, help='Batch size for embedding generation')
     parser.add_argument('--generator_method', type=str, default='tabula', help='Which generator to use')
     parser.add_argument('--compare_method', type=str, default='tabula', help='Which comparison method to use')
+    parser.add_argument('--priv_train_emb', default=None, type=str, help='Path to precomputed private embeddings (safetensors)')
     # END OF ADDED ========================================================
     args = parser.parse_args()
 
@@ -317,13 +318,13 @@ def main(args):
             # Get vote counts for this label's samples
             label_public = public[label]
             label_private_embeddings = private_embedding_cache[label]
+            label_public_embeddings = embed_fn(label_public)
             
             if epoch <= args.sampling_epochs:
                 # PE1 with sampling
                 # denoise vote counts
                 # Calculate distances and get vote counts
 
-                label_public_embeddings = embed_fn(label_public)
                 device = torch.device("cuda")
 
                 private_tensor = torch.tensor(label_private_embeddings, device=device, dtype=torch.float32)

@@ -4,7 +4,7 @@
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=1
 #SBATCH --mem=64G
-#SBATCH --time=3:00:00
+#SBATCH --time=2:00:00
 #SBATCH --gres=gpu:a100:1 
 #SBATCH --mail-user=clu56@student.ubc.ca
 #SBATCH --mail-type=FAIL
@@ -26,7 +26,7 @@ classifier="tabicl"
 eval_only=false
 decay_type="polynomial"
 gamma=0.2
-BATCH_SIZE=2
+BATCH_SIZE=1
 generator_method="tabpe"
 compare_method="tabula"
 
@@ -60,7 +60,6 @@ RESULTS_DIR=/home/carson/scratch/Tabpe_results
 TMP_PROJECT_DIR=${SLURM_TMPDIR}/tabpe
 TMP_DATA_DIR=${TMP_PROJECT_DIR}/data
 TMP_MODEL_DIR=${TMP_PROJECT_DIR}/tabula-8b
-TMP_OUTPUT_DIR=${TMP_PROJECT_DIR}/outputs
 
 module purge
 module load python/3.11
@@ -90,9 +89,7 @@ else
     echo "Skipping model copy (generator_method=$generator_method, compare_method=$compare_method)"
 fi
 
-mkdir -p "${TMP_OUTPUT_DIR}"
 OUTPUT_DIR="${RESULTS_DIR}/${SLURM_JOB_ID}/${dataset}/${seed}/pe/eps_${epsilon}_ns_${num_samples}_e_${epochs}_se_${sampling_epochs}_v_${num_variations}_vm_${variance_multiplier}_dt_${decay_type}_gamma_${gamma}"
-mkdir -p "$OUTPUT_DIR"
 
 # Note that this copies the data to SCRATCH (so we save the split rather than just in TMPDIR)
 echo "Running data split"
@@ -173,6 +170,7 @@ python -u "${TMP_PROJECT_DIR}/src/evaluation/eval.py" \
     --priv_train_csv "${TMP_DATA_DIR}/${dataset}/processed/${dataset}/${seed}/data_train.csv" \
     --priv_val_csv "${TMP_DATA_DIR}/${dataset}/processed/${dataset}/${seed}/data_val.csv" \
     --priv_test_csv "${TMP_DATA_DIR}/${dataset}/processed/${dataset}/${seed}/data_test.csv" \
+    --priv_train_emb "${TMP_DATA_DIR}/${dataset}/processed/${dataset}/${seed}/data_train_emb.safetensors" \
     --synthetic_data_dir "/home/carson/scratch/logs/tabpe/${dataset}/generator-${generator_method}_compare-${compare_method}_seed-${seed}" \
     --classifier "$classifier"
 

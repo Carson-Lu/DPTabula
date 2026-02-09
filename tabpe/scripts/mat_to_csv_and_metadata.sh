@@ -2,7 +2,7 @@
 
 # ===== Defaults =====
 DATASET="BASEHOCK"
-MAX_UNIQUE_RATIO=0.00
+MAX_UNIQUE_RATIO=0.01
 LABEL_COLUMN=""  # empty = default (last column)
 BASE_PATH="/home/carson/scratch/data_tabpe"
 
