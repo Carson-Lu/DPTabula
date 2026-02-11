@@ -2,7 +2,7 @@
 #SBATCH --job-name=tabula_embeddings
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
-#SBATCH --cpus-per-task=2
+#SBATCH --cpus-per-task=1
 #SBATCH --mem=32G
 #SBATCH --time=15:00:00
 #SBATCH --gres=gpu:a100:1 
@@ -33,7 +33,7 @@ DATA_DIR=/home/carson/scratch/data_tabpe
 DATA_SRC="${DATA_DIR}/${dataset}"
 MODEL_SRC=/home/carson/scratch/hf_models/tabula-8b
 TMP_PROJECT_DIR=${SLURM_TMPDIR}/tabpe
-TMP_DATA_DIR=${TMP_PROJECT_DIR}/data
+TMP_DATA_DIR=${TMP_PROJECT_DIR}/data    
 TMP_MODEL_DIR=${TMP_PROJECT_DIR}/tabula-8b
 
 module purge

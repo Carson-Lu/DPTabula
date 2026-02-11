@@ -10,6 +10,7 @@ import argparse
 import numpy as np
 import pickle as pkl
 import pandas as pd
+import safetensors
 from tqdm import tqdm
 from collections import defaultdict
 from pathlib import Path
@@ -270,10 +271,28 @@ def main(args):
             return embedder.embed(samples, all_columns)
     # END OF ADDED ========================================================
 
-    private_embedding_cache = {
-        label: embed_fn(private[label])
-        for label in private
-    }
+    # private_embedding_cache = {
+    #     label: embed_fn(private[label])
+    #     for label in private
+    # }
+    if args.compare_method == "tabula":
+        # Load the embeddings from safetensors
+        embeddings_dict = safetensors.torch.load_file(args.priv_train_emb)
+        embeddings = embeddings_dict['embeddings']  # tensor of shape [num_samples, embedding_dim]
+        logging.info("Private embeddings loaded from safetensors")
+        # Split by label if needed
+        # Assumes you saved embeddings in the same order as `private`
+        start_idx = 0
+        for label in private:
+            n = len(private[label])
+            private_embedding_cache[label] = embeddings[start_idx:start_idx + n].cpu().numpy()
+            start_idx += n
+    else:
+        # Fallback: embed private data on the fly
+        private_embedding_cache = {
+            label: embed_fn(private[label])
+            for label in private
+        }
 
     histograms = {}
     for epoch in tqdm(range(max(e, 1), 1 + args.epochs), desc="Epochs"):
