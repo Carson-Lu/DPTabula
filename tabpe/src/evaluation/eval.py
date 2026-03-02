@@ -146,7 +146,12 @@ def main(args):
     synthetic_data_dir = args.synthetic_data_dir
     classifier = args.classifier
     nearest_k = 5
-    path_results = f"{synthetic_data_dir}/results_{classifier}.json"
+
+    output_dir = args.output_dir
+    path_results = f"{output_dir}/results_{classifier}.json"
+    path_progress = f"{output_dir}/progress_{classifier}.json"
+    os.makedirs(output_dir, exist_ok=True)
+
     if os.path.exists(path_results):
         with open(path_results, 'r') as f:
             results = json.load(f)
@@ -157,7 +162,7 @@ def main(args):
         level=logging.INFO,
         format='%(asctime)s - %(message)s',
         datefmt='%d-%b-%y %H:%M:%S',
-        filename=f"{synthetic_data_dir}/eval_{classifier}.log",
+        filename=f"{output_dir}/eval_{classifier}.log",
         filemode='w'
     )
     console = logging.StreamHandler(sys.stdout)
@@ -174,10 +179,39 @@ def main(args):
 
     csv_name = "synthetic_df.csv"
     accuracies = []
+    
+    if os.path.exists(path_progress):
+        with open(path_progress, "r") as f:
+            progress = json.load(f)
+    else:
+        progress = {}
+    if len(progress) > 0:
+        best_epoch = max(progress, key=lambda k: progress[k]["val_accuracy"])
+        best_accuracy = progress[best_epoch]["val_accuracy"]
+        path_PE_best = f"{synthetic_data_dir}/{best_epoch}/{csv_name}"
+    else:
+        best_accuracy = -1.0
+    
+    for e in range(args.epochs + 1):
+        if str(e) in progress:
+            accuracies.append(progress[str(e)]["val_accuracy"])
     for epoch in tqdm(range(args.epochs + 1)):
+        if str(epoch) in progress:
+            logging.info(f"Skipping epoch {epoch} (already computed)")
+            continue
         df_train = pd.read_csv(f"{synthetic_data_dir}/{epoch}/{csv_name}")
         path_PE = f"{synthetic_data_dir}/{epoch}/{csv_name}"
         accuracy, roc_auc, f1 = run_classifier(df_train, df_val, columns, classifier)
+        
+        progress[str(epoch)] = {
+            "val_accuracy": accuracy,
+            "roc_auc": roc_auc,
+            "f1": f1
+        }
+
+        with open(path_progress, "w") as f:
+            json.dump(progress, f)
+                
         accuracies.append(accuracy)
         if accuracy > best_accuracy:
             best_accuracy = accuracy
@@ -191,7 +225,7 @@ def main(args):
             logging.info(f"\tTest accuracy: {accuracy_test:.10f}, roc_auc: {roc_auc_test:.10f}, macro f1: {f1_test:.10f}")
 
     plt.plot(range(args.epochs + 1), accuracies)
-    plt.savefig(f"{synthetic_data_dir}/accuracies_validation.png")
+    plt.savefig(f"{output_dir}/accuracies_validation.png")
     plt.close()
 
     # last epoch test accuracy
@@ -275,6 +309,7 @@ def parse_args():
     parser.add_argument('--classifier', default='xgboost', type=str, help='Classifier to use')
     parser.add_argument('--epoch-prdc', action='store_true', help='Enable PRDC for each epoch')
     parser.add_argument('--epoch-test-acc', action='store_true', help='Enable test accuracy for each epoch')
+    parser.add_argument('--output_dir', default=None, type=str, help='Output directory')
 
     args = parser.parse_args()
     return args

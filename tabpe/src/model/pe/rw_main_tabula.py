@@ -57,12 +57,12 @@ def get_vector(s, columns, info):
 
 # MODIFIED =========================================================
 def tabpe_get_embeddings(samples, columns, info):
-    return np.array([get_vector(s, columns, info) for s in samples])
+    return np.array([get_vector(s, columns, info) for s in samples], dtype=np.float32)
 
 def vote(public, public_embeddings, private_embeddings, count, noise_multiplier, chunk_size=1024):
-    device = torch.device("cuda")
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-    public_t = torch.from_numpy(public_embeddings).to(device)
+    public_t = torch.from_numpy(public_embeddings).to(device=device, dtype=torch.float32)
 
     num_public = len(public_embeddings)
     histogram = np.zeros(num_public, dtype=np.int64)
@@ -70,7 +70,7 @@ def vote(public, public_embeddings, private_embeddings, count, noise_multiplier,
     for i in range(0, len(private_embeddings), chunk_size):
         private_chunk = torch.from_numpy(
             private_embeddings[i:i+chunk_size]
-        ).to(device)
+        ).to(device=device, dtype=torch.float32)
 
         distances = torch.cdist(private_chunk, public_t)
         votes = distances.argmin(dim=1).cpu().numpy()
@@ -117,6 +117,7 @@ def parse_args():
     parser.add_argument('--generator_method', type=str, default='tabula', help='Which generator to use')
     parser.add_argument('--compare_method', type=str, default='tabula', help='Which comparison method to use')
     parser.add_argument('--priv_train_emb', default=None, type=str, help='Path to precomputed private embeddings (safetensors)')
+    parser.add_argument('--seed', type=int, default=42, help='randomization seed')
     # END OF ADDED ========================================================
     args = parser.parse_args()
 
@@ -158,11 +159,11 @@ class LLMEmbedder:
             del inputs, emb
             torch.cuda.empty_cache()
 
-        return np.vstack(embeddings)
+        return np.vstack(embeddings).astype(np.float32)
 
 def main(args):
     # ADDED ==============================================================
-    seed = 42
+    seed = args.seed
     torch.manual_seed(seed)
     np.random.seed(seed)
     random.seed(seed)
@@ -256,26 +257,22 @@ def main(args):
     # ADDED ===============================================================
     all_columns = columns["numerical"] + columns["categorical"]
 
-    if args.compare_method == "tabpe":
-        logging.info("Using TabPE embedding backend")
-
-        def embed_fn(samples):
-            return tabpe_get_embeddings(samples, columns, info)
-
-    else:
+    if args.compare_method == "tabula":
         logging.info("Using LLM embedding backend")
 
         embedder = LLMEmbedder(args.model_path, args.batch_size)
 
         def embed_fn(samples):
             return embedder.embed(samples, all_columns)
+    else:
+        logging.info("Using TabPE embedding backend")
+
+        def embed_fn(samples):
+            return tabpe_get_embeddings(samples, columns, info)
     # END OF ADDED ========================================================
 
-    # private_embedding_cache = {
-    #     label: embed_fn(private[label])
-    #     for label in private
-    # }
-    if args.compare_method == "tabula":
+    private_embedding_cache = {}
+    if args.compare_method == "tabula" and args.priv_train_emb is not None:
         # Load the embeddings from safetensors
         embeddings_dict = safetensors.torch.load_file(args.priv_train_emb)
         embeddings = embeddings_dict['embeddings']  # tensor of shape [num_samples, embedding_dim]
@@ -344,7 +341,7 @@ def main(args):
                 # denoise vote counts
                 # Calculate distances and get vote counts
 
-                device = torch.device("cuda")
+                device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
                 private_tensor = torch.tensor(label_private_embeddings, device=device, dtype=torch.float32)
                 public_tensor  = torch.tensor(label_public_embeddings, device=device, dtype=torch.float32)
@@ -373,7 +370,10 @@ def main(args):
 
                 # Calculate probabilities based on vote counts
                 total_votes = sum(vote_counts)
-                probabilities = [count / total_votes for count in vote_counts]
+                if total_votes == 0:
+                    probabilities = np.ones(len(vote_counts)) / len(vote_counts)
+                else:
+                    probabilities = [count / total_votes for count in vote_counts]
                 # Sample with replacement based on vote probabilities
                 samples_to_generate = len(label_public)
                 sampled_indices = np.random.choice(
@@ -404,10 +404,11 @@ def main(args):
                     for _ in range(args.num_variations):
                         public_with_variations.append(variation_sample(public_sample))
                 
+                public_with_variations_embeddings = embed_fn(public_with_variations)
                 # Then use vote function to select best samples
                 public_new[label], clean_histogram, noisy_histogram = vote(
-                    label_public,
-                    label_public_embeddings,
+                    public_with_variations,
+                    public_with_variations_embeddings,
                     label_private_embeddings, 
                     len(label_public),
                     noise_multiplier,

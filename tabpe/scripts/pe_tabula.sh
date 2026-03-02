@@ -3,8 +3,8 @@
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=1
-#SBATCH --mem=64G
-#SBATCH --time=2:00:00
+#SBATCH --mem=800G
+#SBATCH --time=5-12:00:00
 #SBATCH --gres=gpu:a100:1 
 #SBATCH --mail-user=clu56@student.ubc.ca
 #SBATCH --mail-type=FAIL
@@ -82,7 +82,7 @@ pip install --no-index -r requirements-cc.txt
 export PYTHONPATH="${TMP_PROJECT_DIR}:${PYTHONPATH}"
 echo "PYTHONPATH set to: ${PYTHONPATH}"
 
-if [[ "$generator_method" != "tabpe" || "$compare_method" != "tabpe" ]]; then
+if [[ ("$generator_method" != "tabpe" || "$compare_method" != "tabpe")  && "$eval_only" == false ]]; then
     rsync -a "${MODEL_SRC}/" "${TMP_MODEL_DIR}/"
     echo "Model copied to ${TMP_MODEL_DIR}"
 else
@@ -90,6 +90,7 @@ else
 fi
 
 OUTPUT_DIR="${RESULTS_DIR}/${SLURM_JOB_ID}/${dataset}/${seed}/pe/eps_${epsilon}_ns_${num_samples}_e_${epochs}_se_${sampling_epochs}_v_${num_variations}_vm_${variance_multiplier}_dt_${decay_type}_gamma_${gamma}"
+mkdir -p "$OUTPUT_DIR"
 
 # Note that this copies the data to SCRATCH (so we save the split rather than just in TMPDIR)
 echo "Running data split"
@@ -105,6 +106,8 @@ echo "Data split completed"
 mkdir -p "${TMP_DATA_DIR}/${dataset}"
 rsync -a "${DATA_SRC}/" "${TMP_DATA_DIR}/${dataset}/"
 echo "Data copied to ${TMP_DATA_DIR}"
+
+SYNTH_DATA_DIR="/home/carson/scratch/logs/tabpe/${dataset}/generator-${generator_method}_compare-${compare_method}_seed-${seed}"
 
 # ----- Run PE -----
 if [[ "$eval_only" == false ]]; then
@@ -122,12 +125,14 @@ if [[ "$eval_only" == false ]]; then
         --variance_multiplier "$variance_multiplier" \
         --decay_type "$decay_type" \
         --gamma "$gamma" \
-        --output_dir "/home/carson/scratch/logs/tabpe/${dataset}/generator-${generator_method}_compare-${compare_method}_seed-${seed}" \
+        --output_dir "${SYNTH_DATA_DIR}" \
         --epsilon "$epsilon" \
         --model_path "${TMP_MODEL_DIR}" \
-        --batch_size ${BATCH_SIZE} \
+        --batch_size "${BATCH_SIZE}" \
         --generator_method "${generator_method}" \
-        --compare_method "${compare_method}"
+        --compare_method "${compare_method}" \
+        --priv_train_emb "${TMP_DATA_DIR}/${dataset}/processed/${dataset}/${seed}/data_train_emb.safetensors" \
+        --seed "${seed}"
 
     end_time=$(date +%s)
     end_time_readable=$(date)
@@ -162,6 +167,13 @@ echo "Timing information saved to: ${OUTPUT_DIR}/timing.txt"
 fi
 
 # ----- Run evaluation -----
+TMP_SYNTH_DIR="${SLURM_TMPDIR}/synthetic_data"
+echo "Copying synthetic data to local scratch"
+rm -rf "${TMP_SYNTH_DIR}"
+mkdir -p "${TMP_SYNTH_DIR}"
+rsync -a "${SYNTH_DATA_DIR}/" "${TMP_SYNTH_DIR}/"
+echo "Synthetic data copied to ${TMP_SYNTH_DIR}"
+
 echo -e "\nRunning Evaluation ==============================================================="
 echo -e "Compare method using ${compare_method}"
 python -u "${TMP_PROJECT_DIR}/src/evaluation/eval.py" \
@@ -170,8 +182,8 @@ python -u "${TMP_PROJECT_DIR}/src/evaluation/eval.py" \
     --priv_train_csv "${TMP_DATA_DIR}/${dataset}/processed/${dataset}/${seed}/data_train.csv" \
     --priv_val_csv "${TMP_DATA_DIR}/${dataset}/processed/${dataset}/${seed}/data_val.csv" \
     --priv_test_csv "${TMP_DATA_DIR}/${dataset}/processed/${dataset}/${seed}/data_test.csv" \
-    --priv_train_emb "${TMP_DATA_DIR}/${dataset}/processed/${dataset}/${seed}/data_train_emb.safetensors" \
-    --synthetic_data_dir "/home/carson/scratch/logs/tabpe/${dataset}/generator-${generator_method}_compare-${compare_method}_seed-${seed}" \
+    --synthetic_data_dir "${TMP_SYNTH_DIR}" \
+    --output_dir "${SYNTH_DATA_DIR}" \
     --classifier "$classifier"
 
 echo -e "eval.py completed, now running eval_embedding.py ==============================================================="
@@ -183,6 +195,7 @@ python -u "${TMP_PROJECT_DIR}/src/evaluation/eval_embedding.py" \
     --priv_train_csv "${TMP_DATA_DIR}/${dataset}/processed/${dataset}/${seed}/data_train.csv" \
     --priv_val_csv "${TMP_DATA_DIR}/${dataset}/processed/${dataset}/${seed}/data_val.csv" \
     --priv_test_csv "${TMP_DATA_DIR}/${dataset}/processed/${dataset}/${seed}/data_test.csv" \
-    --synthetic_dir "/home/carson/scratch/logs/tabpe/${dataset}/generator-${generator_method}_compare-${compare_method}_seed-${seed}" \
+    --synthetic_dir "${TMP_SYNTH_DIR}" \
+    --output_dir "${SYNTH_DATA_DIR}"
 
 echo "Done! Results saved to $OUTPUT_DIR"

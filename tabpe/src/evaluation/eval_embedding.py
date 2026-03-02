@@ -225,16 +225,15 @@ def main(args):
     np.random.seed(0)
     torch.manual_seed(0)
 
-    dataset = args.dataset
-    seed = args.seed
     synthetic_dir = args.synthetic_dir
+    output_dir = args.output_dir
 
-
+    os.makedirs(output_dir, exist_ok=True)
     logging.basicConfig(
         level=logging.INFO,
         format='%(asctime)s - %(message)s',
         datefmt='%d-%b-%y %H:%M:%S',
-        filename=f"{synthetic_dir}/eval_prdc.log",
+        filename=f"{output_dir}/eval_prdc.log",
         filemode='w'
     )
     console = logging.StreamHandler(sys.stdout)
@@ -299,9 +298,15 @@ def main(args):
     epochs = [int(epoch) for epoch in epochs if epoch.isdigit()]
     epochs.sort()
     for epoch in epochs:
-        if not os.path.isdir(f"{synthetic_dir}/{epoch}"):
+        epoch_dir = f"{synthetic_dir}/{epoch}"
+        if not os.path.isdir(epoch_dir):
             continue
-        
+        # check if this epoch already has results saved
+        epoch_results_file = os.path.join(output_dir, f"epoch_{epoch}_results.json")
+        if os.path.exists(epoch_results_file):
+            logging.info(f"Skipping epoch {epoch}, results already exist.")
+            continue
+    
         logging.info(f"Epoch {epoch}:")
         df_fake = pd.read_csv(f"{synthetic_dir}/{epoch}/synthetic_df.csv")
         y_fake = df_fake[target_col]
@@ -315,7 +320,20 @@ def main(args):
         logging.info(f"\tPRDC: {prdc}")
         
         mu1, sigma1 = Z_real_train.mean(axis=0), np.cov(Z_real_train, rowvar=False)
-        mu2, sigma2 = Z_fake.mean(axis=0), np.cov(Z_fake, rowvar=False)        
+        mu2, sigma2 = Z_fake.mean(axis=0), np.cov(Z_fake, rowvar=False)
+        
+        logging.info(f"\tTest accuracy: {synthetic_results['accuracy']:.4f}")
+        logging.info(f"\tPRDC: {prdc}")
+
+        # Save results per epoch
+        results_to_save = {
+            "accuracy": synthetic_results['accuracy'],
+            "prdc": prdc,
+            "classification_report": synthetic_results['classification_report']
+        }
+        with open(epoch_results_file, "w") as f:
+            json.dump(results_to_save, f)
+                
 
 
 if __name__ == "__main__":
@@ -327,5 +345,6 @@ if __name__ == "__main__":
     parser.add_argument('--priv_val_csv', default=None, type=str, help='Path to private validation data file')
     parser.add_argument('--priv_test_csv', default=None, type=str, help='Path to private test data file')
     parser.add_argument("--synthetic_dir", type=str, required=True)
+    parser.add_argument('--output_dir', default=None, type=str, help='Output directory')
     args = parser.parse_args()
     main(args)
