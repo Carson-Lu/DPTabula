@@ -15,6 +15,7 @@ import torch
 from itertools import combinations
 import logging
 import sys
+import gc
 # from tabpfn import TabPFNClassifier
 from tabicl import TabICLClassifier
 from sklearn.metrics import accuracy_score, roc_auc_score, f1_score
@@ -97,7 +98,13 @@ def run_classifier(df_train, df_test, columns, classifier='xgboost'):
     else:
         auc_score = -1.0
 
-    return accuracy_score(y_test, y_pred), auc_score, f1_score(y_test, y_pred, average='macro')
+    results = accuracy_score(y_test, y_pred), auc_score, f1_score(y_test, y_pred, average='macro')
+    # Free memory
+    del model, X_train, X_test, y_train, y_test
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+    
+    return results
 
 
 def average_k_tvd(df_syn, df_test, columns, K=2, num_bins=20):
@@ -197,12 +204,17 @@ def main(args):
             accuracies.append(progress[str(e)]["val_accuracy"])
     for epoch in tqdm(range(args.epochs + 1)):
         if str(epoch) in progress:
-            logging.info(f"Skipping epoch {epoch} (already computed)")
+            cached = progress[str(epoch)]
+            logging.info(f"Epoch {epoch} -- val accuracy: {cached['val_accuracy']:.10f}, roc_auc: {cached['roc_auc']:.10f}, macro f1: {cached['f1']:.10f}, average 1-TVD: {cached.get('avg_1_tvd', -1):.3f}, average 2-TVD: {cached.get('avg_2_tvd', -1):.3f}, average 3-TVD: {cached.get('avg_3_tvd', -1):.3f} (cached)")
+            accuracies.append(cached["val_accuracy"])
+            if cached["val_accuracy"] > best_accuracy:
+                best_accuracy = cached["val_accuracy"]
+                path_PE_best = f"{synthetic_data_dir}/{epoch}/{csv_name}"
             continue
         df_train = pd.read_csv(f"{synthetic_data_dir}/{epoch}/{csv_name}")
         path_PE = f"{synthetic_data_dir}/{epoch}/{csv_name}"
         accuracy, roc_auc, f1 = run_classifier(df_train, df_val, columns, classifier)
-        
+
         progress[str(epoch)] = {
             "val_accuracy": accuracy,
             "roc_auc": roc_auc,
@@ -223,8 +235,14 @@ def main(args):
         if args.epoch_test_acc:
             accuracy_test, roc_auc_test, f1_test = run_classifier(df_train, df_test, columns, classifier)
             logging.info(f"\tTest accuracy: {accuracy_test:.10f}, roc_auc: {roc_auc_test:.10f}, macro f1: {f1_test:.10f}")
+            
+        # Free memory immediately after use
+        del df_train
+        gc.collect()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
 
-    plt.plot(range(args.epochs + 1), accuracies)
+    plt.plot(range(len(accuracies)), accuracies)
     plt.savefig(f"{output_dir}/accuracies_validation.png")
     plt.close()
 

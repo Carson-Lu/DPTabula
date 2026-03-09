@@ -3,8 +3,8 @@
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=1
-#SBATCH --mem=800G
-#SBATCH --time=5-12:00:00
+#SBATCH --mem=200G
+#SBATCH --time=24:00:00
 #SBATCH --gres=gpu:a100:1 
 #SBATCH --mail-user=clu56@student.ubc.ca
 #SBATCH --mail-type=FAIL
@@ -15,14 +15,14 @@
 
 # ----- Default parameters -----
 dataset="adult"
-epochs=15
-sampling_epochs=5
+epochs=20
+sampling_epochs=20
 num_samples=1000
 num_variations=3
 variance_multiplier=0.5
-epsilon=1.0
+epsilon=1
 seed=42
-classifier="tabicl"
+classifier="linear" # tabicl used for most, use linear for fastest comparison (logistic)
 eval_only=false
 decay_type="polynomial"
 gamma=0.2
@@ -107,7 +107,7 @@ mkdir -p "${TMP_DATA_DIR}/${dataset}"
 rsync -a "${DATA_SRC}/" "${TMP_DATA_DIR}/${dataset}/"
 echo "Data copied to ${TMP_DATA_DIR}"
 
-SYNTH_DATA_DIR="/home/carson/scratch/logs/tabpe/${dataset}/generator-${generator_method}_compare-${compare_method}_seed-${seed}"
+SYNTH_DATA_DIR="/home/carson/scratch/logs/tabpe/${dataset}/epsilon_${epsilon}/seed_${seed}/compare_${compare_method}/generator_${generator_method}/sampling_epochs_${sampling_epochs}/base_tabpe"
 
 # ----- Run PE -----
 if [[ "$eval_only" == false ]]; then

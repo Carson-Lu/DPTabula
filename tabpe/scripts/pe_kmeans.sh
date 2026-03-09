@@ -3,8 +3,8 @@
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=1
-#SBATCH --mem=800G
-#SBATCH --time=5-12:00:00
+#SBATCH --mem=10G
+#SBATCH --time=18:00:00
 #SBATCH --gres=gpu:a100:1 
 #SBATCH --mail-user=clu56@student.ubc.ca
 #SBATCH --mail-type=FAIL
@@ -15,30 +15,26 @@
 
 # ----- Default parameters -----
 dataset="adult"
-epochs=15
-sampling_epochs=5
+epochs=20
 num_samples=1000
-num_variations=3
 variance_multiplier=0.5
-epsilon=1.0
+epsilon=1
 seed=42
-classifier="tabicl"
+classifier="linear"
 eval_only=false
 decay_type="polynomial"
 gamma=0.2
 BATCH_SIZE=1
 generator_method="tabpe"
 compare_method="tabula"
-num_clusters=10
-cluster_selection="ch_index"
+num_clusters=5
+per_class_kmeans=true # FALSE means that keamns is done on whole dataset
 
 while [[ "$#" -gt 0 ]]; do
     case $1 in
         --dataset) dataset="$2"; shift ;;
         --epochs) epochs="$2"; shift ;;
-        --sampling_epochs) sampling_epochs="$2"; shift ;;
         --num_samples) num_samples="$2"; shift ;;
-        --num_variations) num_variations="$2"; shift ;;
         --variance_multiplier) variance_multiplier="$2"; shift ;;
         --epsilon) epsilon="$2"; shift ;;
         --seed) seed="$2"; shift ;;
@@ -49,7 +45,7 @@ while [[ "$#" -gt 0 ]]; do
         --generator_method) generator_method="$2"; shift ;;
         --compare_method) compare_method="$2"; shift ;;
         --num_clusters) num_clusters="$2"; shift ;;
-        --cluster_selection) cluster_selection="$2"; shift ;;
+        --per_class_kmeans) per_class_kmeans="$2"; shift ;;
         *) echo "Unknown parameter: $1"; exit 1 ;;
     esac
     shift
@@ -93,7 +89,7 @@ else
     echo "Skipping model copy (generator_method=$generator_method, compare_method=$compare_method)"
 fi
 
-OUTPUT_DIR="${RESULTS_DIR}/${SLURM_JOB_ID}/${dataset}/${seed}/pe/eps_${epsilon}_ns_${num_samples}_e_${epochs}_se_${sampling_epochs}_v_${num_variations}_vm_${variance_multiplier}_dt_${decay_type}_gamma_${gamma}"
+OUTPUT_DIR="${RESULTS_DIR}/${SLURM_JOB_ID}/${dataset}/${seed}/pe/eps_${epsilon}_ns_${num_samples}_e_${epochs}_vm_${variance_multiplier}_dt_${decay_type}_gamma_${gamma}"
 mkdir -p "$OUTPUT_DIR"
 
 # Note that this copies the data to SCRATCH (so we save the split rather than just in TMPDIR)
@@ -111,8 +107,7 @@ mkdir -p "${TMP_DATA_DIR}/${dataset}"
 rsync -a "${DATA_SRC}/" "${TMP_DATA_DIR}/${dataset}/"
 echo "Data copied to ${TMP_DATA_DIR}"
 
-SYNTH_DATA_DIR="/home/carson/scratch/logs/tabpe/${dataset}/KMEANS-generator-${generator_method}_compare-${compare_method}_seed-${seed}"
-
+SYNTH_DATA_DIR="/home/carson/scratch/logs/tabpe/${dataset}/epsilon_${epsilon}/seed_${seed}/compare_${compare_method}/generator_${generator_method}/per_class_kmeans_${per_class_kmeans}/num_clusters_${num_clusters}"
 # ----- Run PE -----
 if [[ "$eval_only" == false ]]; then
     echo -e "\nRunning PE ==============================================================="
@@ -121,11 +116,9 @@ if [[ "$eval_only" == false ]]; then
     echo "Starting PE execution at: $start_time_readable"
     python -u "${TMP_PROJECT_DIR}/src/model/pe/rw_main_kmeans.py" \
         --epochs "$epochs" \
-        --sampling_epochs "$sampling_epochs" \
         --priv_train_csv "${TMP_DATA_DIR}/${dataset}/processed/${dataset}/${seed}/data_train.csv" \
         --metadata_path "${TMP_DATA_DIR}/${dataset}/metadata.json" \
         --num_samples "$num_samples" \
-        --num_variations "$num_variations" \
         --variance_multiplier "$variance_multiplier" \
         --decay_type "$decay_type" \
         --gamma "$gamma" \
@@ -138,7 +131,7 @@ if [[ "$eval_only" == false ]]; then
         --priv_train_emb "${TMP_DATA_DIR}/${dataset}/processed/${dataset}/${seed}/data_train_emb.safetensors" \
         --seed "${seed}" \
         --num_clusters "${num_clusters}" \
-        --cluster_selection "${cluster_selection}"
+        --per_class_kmeans "${per_class_kmeans}"
 
     end_time=$(date +%s)
     end_time_readable=$(date)
@@ -162,11 +155,12 @@ Parameters:
 - Dataset: $dataset
 - Epochs: $epochs
 - Num samples: $num_samples
-- Num variations: $num_variations
 - Epsilon: $epsilon
 - Seed: $seed
 - generator_method: $generator_method
 - compare_method: $compare_method
+- num_clusters: $num_clusters
+- per_class_kmeans: $per_class_kmeans
 EOF
 
 echo "Timing information saved to: ${OUTPUT_DIR}/timing.txt"

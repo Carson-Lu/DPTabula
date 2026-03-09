@@ -22,6 +22,7 @@ import argparse
 import os
 import logging
 import sys
+import gc
 from tqdm import tqdm
 
 
@@ -283,6 +284,12 @@ def main(args):
     # ---- Embed test data and evaluate downstream task ----
     Z_real_train = embed_with_ae(ae, X_real_train_proc, ae_cfg)
     Z_real_test = embed_with_ae(ae, X_real_test_proc, ae_cfg)    
+    
+    del X_real_train_proc, X_real_test_proc
+    gc.collect()
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+
     # Evaluate downstream task on test set
     test_results = evaluate_downstream_task(Z_real_train, y_real_train, Z_real_test, y_real_test)  # No split needed for test
     logging.info(f"Test accuracy: {test_results['accuracy']:.4f}")
@@ -304,7 +311,13 @@ def main(args):
         # check if this epoch already has results saved
         epoch_results_file = os.path.join(output_dir, f"epoch_{epoch}_results.json")
         if os.path.exists(epoch_results_file):
-            logging.info(f"Skipping epoch {epoch}, results already exist.")
+            with open(epoch_results_file, "r") as f:
+                cached = json.load(f)
+            logging.info(
+                f"Epoch {epoch} (cached)\n"
+                f"\tTest -- accuracy: {cached['accuracy']:.4f}\n"
+                f"\tPRDC -- precision: {cached['prdc']['precision']:.4f}, recall: {cached['prdc']['recall']:.4f}, density: {cached['prdc']['density']:.4f}, coverage: {cached['prdc']['coverage']:.4f}"
+            )
             continue
     
         logging.info(f"Epoch {epoch}:")
@@ -314,16 +327,19 @@ def main(args):
         X_fake_proc = preproc.transform(df_fake).astype(np.float32)
         Z_fake = embed_with_ae(ae, X_fake_proc, ae_cfg)
         
+        del df_fake
+        del X_fake_proc
+        gc.collect()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+                
         synthetic_results = evaluate_downstream_task(Z_fake, y_fake, Z_real_test, y_real_test)
         logging.info(f"\tTest accuracy: {synthetic_results['accuracy']:.4f}")
         prdc = compute_prdc_(Z_real_train, Z_fake, 5)
         logging.info(f"\tPRDC: {prdc}")
         
-        mu1, sigma1 = Z_real_train.mean(axis=0), np.cov(Z_real_train, rowvar=False)
-        mu2, sigma2 = Z_fake.mean(axis=0), np.cov(Z_fake, rowvar=False)
-        
-        logging.info(f"\tTest accuracy: {synthetic_results['accuracy']:.4f}")
-        logging.info(f"\tPRDC: {prdc}")
+        # mu1, sigma1 = Z_real_train.mean(axis=0), np.cov(Z_real_train, rowvar=False)
+        # mu2, sigma2 = Z_fake.mean(axis=0), np.cov(Z_fake, rowvar=False)
 
         # Save results per epoch
         results_to_save = {
@@ -333,6 +349,12 @@ def main(args):
         }
         with open(epoch_results_file, "w") as f:
             json.dump(results_to_save, f)
+            
+        # Free epoch data after saving
+        del Z_fake, synthetic_results, prdc
+        gc.collect()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
                 
 
 

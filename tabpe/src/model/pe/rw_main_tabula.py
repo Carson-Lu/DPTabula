@@ -269,7 +269,6 @@ def main(args):
 
         def embed_fn(samples):
             return tabpe_get_embeddings(samples, columns, info)
-    # END OF ADDED ========================================================
 
     private_embedding_cache = {}
     if args.compare_method == "tabula" and args.priv_train_emb is not None:
@@ -285,62 +284,82 @@ def main(args):
             private_embedding_cache[label] = embeddings[start_idx:start_idx + n].cpu().numpy()
             start_idx += n
     else:
+        logging.warning("WARNING: No precomputed private embeddings found, embedding on the fly")
         # Fallback: embed private data on the fly
         private_embedding_cache = {
             label: embed_fn(private[label])
             for label in private
         }
+        
+    def linear_range(epoch_, T, base, floor=0.02):
+        t = epoch_ / T
+        return base - (base - floor) * t
+    
+    def var_range(epoch_, T, base, floor=0.02):
+        t = epoch_ / T
+        return base - (base - floor) * (t**args.gamma)  # quadratic decay
+
+    def auto_range(epoch_, T, base, floor=0.02):
+        if args.decay_type == 'linear':
+            return linear_range(epoch_, T, base, floor)
+        elif args.decay_type == 'polynomial':
+            return var_range(epoch_, T, base, floor)
+        else:
+            raise ValueError(f'Invalid decay type: {args.decay_type}')
+
+    def variation_sample_tabpe(sample, epoch_):
+        s = copy.deepcopy(sample)
+        for i, c in enumerate(columns["numerical"] + columns["categorical"]):
+            if c in columns["numerical"]:
+                multiplier_range = auto_range(epoch_, args.epochs, args.variance_multiplier)
+                s[i] += random.uniform(-multiplier_range, multiplier_range) * (info[c]['max'] - info[c]['min'])
+                if s[i] < info[c]['min']:
+                    s[i] = info[c]['min']
+                if s[i] > info[c]['max']:
+                    s[i] = info[c]['max']
+            else:
+                probability = auto_range(epoch_, args.epochs, args.variance_multiplier)
+                if np.random.choice([0, 1], 1, p=[1.0 - probability, probability])[0] == 1:
+                    s[i] = random.choice(list(info[c].keys()))
+        return s
+
+    def variation_sample_tabula(sample, epoch_):
+        s = copy.deepcopy(sample)
+        for i, c in enumerate(columns["numerical"] + columns["categorical"]):
+            if c in columns["numerical"]:
+                multiplier_range = auto_range(epoch_, args.epochs, args.variance_multiplier)
+                # Gaussian noise instead of uniform
+                s[i] += np.random.normal(0, multiplier_range) * (info[c]['max'] - info[c]['min'])
+                if s[i] < info[c]['min']:
+                    s[i] = info[c]['min']
+                if s[i] > info[c]['max']:
+                    s[i] = info[c]['max']
+            else:
+                probability = auto_range(epoch_, args.epochs, args.variance_multiplier)
+                if np.random.choice([0, 1], 1, p=[1.0 - probability, probability])[0] == 1:
+                    s[i] = random.choice(list(info[c].keys()))
+        return s
+
+    # Select based on generator_method, same pattern as embed_fn
+    if args.generator_method == "tabula":
+        logging.info("Using tabula variation backend")
+        variation_sample = variation_sample_tabula
+    else:
+        logging.info("Using tabpe variation backend")
+        variation_sample = variation_sample_tabpe
+    # END OF ADDED ========================================================
 
     histograms = {}
     for epoch in tqdm(range(max(e, 1), 1 + args.epochs), desc="Epochs"):
-        def linear_range(epoch_, T, base, floor=0.02):
-            t = epoch_ / T
-            return base - (base - floor) * t
-        
-        def var_range(epoch_, T, base, floor=0.02):
-            t = epoch_ / T
-            return base - (base - floor) * (t**args.gamma)  # quadratic decay
-
-        def auto_range(epoch_, T, base, floor=0.02):
-            if args.decay_type == 'linear':
-                return linear_range(epoch_, T, base, floor)
-            elif args.decay_type == 'polynomial':
-                return var_range(epoch_, T, base, floor)
-            else:
-                raise ValueError(f'Invalid decay type: {args.decay_type}')
-
-        # logging.info(f'Epoch {epoch}')
-        def variation_sample(sample, epoch_=epoch):
-            s = copy.deepcopy(sample)
-            for i, c in enumerate(columns["numerical"] + columns["categorical"]):
-                if c in columns["numerical"]:
-                    # Always add noise first
-                    multiplier_range = auto_range(epoch_, args.epochs, args.variance_multiplier)
-                    s[i] += random.uniform(-multiplier_range, multiplier_range) * (info[c]['max'] - info[c]['min'])
-                    
-                    if s[i] < info[c]['min']:
-                        s[i] = info[c]['min']
-                    if s[i] > info[c]['max']:
-                        s[i] = info[c]['max']
-                else:
-                    probability = auto_range(epoch_, args.epochs, args.variance_multiplier)
-                    if np.random.choice([0, 1], 1, p=[1.0 - probability, probability])[0] == 1:
-                        s[i] = random.choice(list(info[c].keys()))
-            return s
-
         public_new = defaultdict(list)
         histograms[epoch] = {}
         for label in public:
             # Get vote counts for this label's samples
             label_public = public[label]
             label_private_embeddings = private_embedding_cache[label]
-            label_public_embeddings = embed_fn(label_public)
             
             if epoch <= args.sampling_epochs:
-                # PE1 with sampling
-                # denoise vote counts
-                # Calculate distances and get vote counts
-
+                label_public_embeddings = embed_fn(label_public)
                 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
                 private_tensor = torch.tensor(label_private_embeddings, device=device, dtype=torch.float32)
@@ -385,7 +404,7 @@ def main(args):
                     
                 # Generate variations for sampled data
                 for idx in sampled_indices:
-                    variation = variation_sample(label_public[idx])
+                    variation = variation_sample(label_public[idx], epoch)
                     public_new[label].append(variation)
                 
                 # Store histograms
@@ -402,7 +421,7 @@ def main(args):
                 public_with_variations = copy.deepcopy(label_public)
                 for public_sample in label_public:
                     for _ in range(args.num_variations):
-                        public_with_variations.append(variation_sample(public_sample))
+                        public_with_variations.append(variation_sample(public_sample, epoch))
                 
                 public_with_variations_embeddings = embed_fn(public_with_variations)
                 # Then use vote function to select best samples

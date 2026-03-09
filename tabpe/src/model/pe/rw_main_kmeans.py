@@ -15,7 +15,6 @@ from collections import defaultdict
 from pathlib import Path
 from transformers import AutoModel, AutoTokenizer
 from sklearn.cluster import KMeans
-from sklearn.metrics import calinski_harabasz_score
 
 import logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(message)s', datefmt='%d-%b-%y %H:%M:%S')
@@ -59,26 +58,6 @@ def get_vector(s, columns, info):
 # MODIFIED =========================================================
 def tabpe_get_embeddings(samples, columns, info):
     return np.array([get_vector(s, columns, info) for s in samples])
-
-def vote(public, private, count, noise_multiplier, embed_fn):
-    public_embeddings = embed_fn(public)
-    private_embeddings = embed_fn(private)
-
-    distances = torch.cdist(
-        torch.tensor(private_embeddings),
-        torch.tensor(public_embeddings)
-    ).cpu().numpy()
-
-    votes_embeddings = distances.argmin(axis=1).tolist()
-    histogram = [0 for _ in range(len(public))]
-    for v in votes_embeddings:
-        histogram[v] += 1
-    noisy_histogram = [h + np.random.normal(0, noise_multiplier) for h in histogram]
-    public_best = []
-    for i in np.argsort(noisy_histogram)[::-1][:count]:
-        public_best.append(public[i])
-    return public_best, histogram, noisy_histogram
-
 # END OF MODIFIED ==================================================
 
 def try_float(x):
@@ -90,11 +69,9 @@ def try_float(x):
 def parse_args():
     parser = argparse.ArgumentParser(description='PE for tabular data')
     parser.add_argument('--epochs', default=10, type=int, help='Number of epochs')
-    parser.add_argument('--sampling_epochs', default=0, type=int, help='Number of epochs for PE1 with sampling')
     parser.add_argument('--priv_train_csv', default=None, type=str, help='Location of private data')
     parser.add_argument('--metadata_path', default=None, type=str, help='Path to metadata json file')
     parser.add_argument('--num_samples', default=2000, type=int, help='Number of samples to generate')
-    parser.add_argument('--num_variations', default=3, type=int, help='How many variations for every sample')
     parser.add_argument('--variance_multiplier', default=0.5, type=float, help='Multiplier for variance')
     parser.add_argument('--decay_type', default='linear', type=str, help='Type of decay for variance')
     parser.add_argument('--gamma', default=0.2, type=float, help='Gamma for decay')
@@ -109,7 +86,7 @@ def parse_args():
     parser.add_argument('--priv_train_emb', default=None, type=str, help='Path to precomputed private embeddings (safetensors)')
     parser.add_argument('--seed', type=int, default=42, help='randomization seed')
     parser.add_argument('--num_clusters', type=int, default=10, help='Number of clusters to use')
-    parser.add_argument('--cluster_selection', type=str, default='ch_index', help='Method for determining cluster selection')
+    parser.add_argument('--per_class_kmeans', type=bool, default=True, help='Whether to perform k-means per class or on the whole dataset')
     # END OF ADDED ========================================================
     args = parser.parse_args()
 
@@ -263,8 +240,28 @@ def main(args):
 
         def embed_fn(samples):
             return tabpe_get_embeddings(samples, columns, info)
+        
+    private_embedding_cache = {}
+    if args.compare_method == "tabula" and args.priv_train_emb is not None:
+        # Load the embeddings from safetensors
+        embeddings_dict = safetensors.torch.load_file(args.priv_train_emb)
+        embeddings = embeddings_dict['embeddings']  # tensor of shape [num_samples, embedding_dim]
+        logging.info("Private embeddings loaded from safetensors")
+        # Split by label if needed
+        # Assumes you saved embeddings in the same order as `private`
+        start_idx = 0
+        for label in private:
+            n = len(private[label])
+            private_embedding_cache[label] = embeddings[start_idx:start_idx + n].cpu().numpy()
+            start_idx += n
+    else:
+        # Fallback: embed private data on the fly
+        logging.warning("WARNING: No precomputed private embeddings found, embedding on the fly")
+        private_embedding_cache = {
+            label: embed_fn(private[label])
+            for label in private
+        }
     # END OF ADDED ========================================================
-
 
     for epoch in tqdm(range(max(e, 1), 1 + args.epochs), desc="Epochs"):
         def linear_range(epoch_, T, base, floor=0.02):
@@ -301,56 +298,20 @@ def main(args):
                     if np.random.choice([0, 1], 1, p=[1.0 - probability, probability])[0] == 1:
                         s[i] = random.choice(list(info[c].keys()))
             return s
-        
-        private_embedding_cache = {}
-        if args.compare_method == "tabula" and args.priv_train_emb is not None:
-            # Load the embeddings from safetensors
-            embeddings_dict = safetensors.torch.load_file(args.priv_train_emb)
-            embeddings = embeddings_dict['embeddings']  # tensor of shape [num_samples, embedding_dim]
-            logging.info("Private embeddings loaded from safetensors")
-            # Split by label if needed
-            # Assumes you saved embeddings in the same order as `private`
-            start_idx = 0
-            for label in private:
-                n = len(private[label])
-                private_embedding_cache[label] = embeddings[start_idx:start_idx + n].cpu().numpy()
-                start_idx += n
-        else:
-            # Fallback: embed private data on the fly
-            private_embedding_cache = {
-                label: embed_fn(private[label])
-                for label in private
-            }
 
         public_new = defaultdict(list)
         for label in public:
             # Get vote counts for this label's samples
             label_public = public[label]
-            label_private = private[label]
             label_embeddings = embed_fn(label_public)
             
-            if args.compare_method == "tabula": 
-                _, sampled_indices = dp_resample_synthetic(
-                    label_embeddings,
-                    private_embedding_cache[label],
-                    noise_multiplier,
-                    len(label_public),
-                    num_clusters=int(args.num_clusters),
-                    cluster_selection=args.cluster_selection,
-                    max_K=100,
-                )
-            elif args.compare_method == "tabpe":
-                _, sampled_indices = dp_resample_synthetic(
-                    label_public,
-                    label_private,
-                    noise_multiplier,
-                    len(label_public),
-                    num_clusters=int(args.num_clusters),
-                    cluster_selection=args.cluster_selection,
-                    max_K=100,
-                )
-            else:
-                raise ValueError("Invalid compare_method")
+            _, sampled_indices = dp_resample_synthetic(
+                label_embeddings,
+                private_embedding_cache[label],
+                noise_multiplier,
+                len(label_public),
+                num_clusters=int(args.num_clusters)
+            )
 
             # Generate variations for sampled data
             for idx in sampled_indices:
@@ -377,29 +338,12 @@ def main(args):
 
 def dp_resample_synthetic(
     syn_embeddings,
-    real_data,
+    real_data_embeddings,
     noise_multiplier,
     num_synthetic_samples,
-    num_clusters=None, # cluster_selection == ch_index will ignore this
-    cluster_selection="ch_index", # Fixed or classes
-    max_K=1000,
+    num_clusters=10
 ):
-    if cluster_selection == "classes": # LINE 1
-        if num_clusters is None:
-            raise ValueError("n_classes must be provided for cluster_selection='classes'")
-        K = num_clusters
-    elif cluster_selection == "ch_index":
-        best_score = -np.inf
-        best_K = 2
-        for k in range(2, min(max_K, len(syn_embeddings) - 1) + 1):
-            labels = KMeans(n_clusters=k, random_state=0).fit_predict(syn_embeddings)
-            score = calinski_harabasz_score(syn_embeddings, labels)
-            if score > best_score:
-                best_score = score
-                best_K = k
-        K = best_K
-    else:
-        K = num_clusters if num_clusters else 10
+    K = num_clusters
 
     # K-means on synthetic embeddings
     kmeans = KMeans(n_clusters=K, random_state=0).fit(syn_embeddings)
@@ -408,7 +352,7 @@ def dp_resample_synthetic(
 
     # LINE 3-8
     h = np.zeros(K)
-    for e in real_data:
+    for e in real_data_embeddings:
         h[np.argmin(np.linalg.norm(e - centroids, axis=1))] += 1
 
     sigma = noise_multiplier
@@ -436,7 +380,7 @@ def dp_resample_synthetic(
         for idx in np.argsort(fractional_remainders)[::-1][:leftover]:
             cluster_idx = np.where(clusters == idx)[0]
             if len(cluster_idx) > 0:
-                sampled_indices.extend(np.random.choice(cluster_idx, 1, replace=len(cluster_idx) == 1))
+                sampled_indices.extend(np.random.choice(cluster_idx, 1, replace=False))
 
     return p, sampled_indices
 
