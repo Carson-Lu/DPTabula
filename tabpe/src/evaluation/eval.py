@@ -207,8 +207,8 @@ def main(args):
 
         avg_1_tvd = avg_2_tvd = avg_3_tvd = -1
         avg_1_tvd = average_k_tvd(df_train, df_priv, columns, K=1, num_bins=20)
-        avg_2_tvd = average_k_tvd(df_train, df_priv, columns, K=2, num_bins=20)
-        avg_3_tvd = average_k_tvd(df_train, df_priv, columns, K=3, num_bins=20)
+        # avg_2_tvd = average_k_tvd(df_train, df_priv, columns, K=2, num_bins=20)
+        # avg_3_tvd = average_k_tvd(df_train, df_priv, columns, K=3, num_bins=20)
 
         epoch_results = {
             "val_accuracy": accuracy,
@@ -257,15 +257,15 @@ def main(args):
     accuracy_test, roc_auc_test, f1_test = run_classifier(df_pe_best, df_test, columns, classifier)
     avg_1_tvd = avg_2_tvd = avg_3_tvd = -1
     avg_1_tvd = average_k_tvd(df_pe_best, df_priv, columns, K=1, num_bins=20)
-    avg_2_tvd = average_k_tvd(df_pe_best, df_priv, columns, K=2, num_bins=20)
-    avg_3_tvd = average_k_tvd(df_pe_best, df_priv, columns, K=3, num_bins=20)
+    # avg_2_tvd = average_k_tvd(df_pe_best, df_priv, columns, K=2, num_bins=20)
+    # avg_3_tvd = average_k_tvd(df_pe_best, df_priv, columns, K=3, num_bins=20)
     logging.info(f"Best Val: Test accuracy using best epoch according to val: {accuracy_test:.10f}, roc_auc: {roc_auc_test:.10f}, macro f1: {f1_test:.10f}, average 1-TVD: {avg_1_tvd:.3f}, average 2-TVD: {avg_2_tvd:.3f}, average 3-TVD: {avg_3_tvd:.3f}")
 
     accuracy_train, roc_auc_train, f1_train =  run_classifier(df_priv, df_test, columns, classifier)
     avg_1_tvd = avg_2_tvd = avg_3_tvd = -1
     avg_1_tvd = average_k_tvd(df_test, df_priv, columns, K=1, num_bins=20)
-    avg_2_tvd = average_k_tvd(df_test, df_priv, columns, K=2, num_bins=20)
-    avg_3_tvd = average_k_tvd(df_test, df_priv, columns, K=3, num_bins=20)
+    # avg_2_tvd = average_k_tvd(df_test, df_priv, columns, K=2, num_bins=20)
+    # avg_3_tvd = average_k_tvd(df_test, df_priv, columns, K=3, num_bins=20)
     logging.info(f"Upper Bound (using priv train data): Test accuracy: {accuracy_train:.10f}, roc_auc: {roc_auc_train:.10f}, macro f1: {f1_train:.10f}, average 1-TVD: {avg_1_tvd:.3f}, average 2-TVD: {avg_2_tvd:.3f}, average 3-TVD: {avg_3_tvd:.3f}")
 
     if args.epoch_prdc:
