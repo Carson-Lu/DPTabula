@@ -156,7 +156,6 @@ def main(args):
 
     output_dir = args.output_dir
     path_results = f"{output_dir}/results_{classifier}.json"
-    path_progress = f"{output_dir}/progress_{classifier}.json"
     os.makedirs(output_dir, exist_ok=True)
 
     if os.path.exists(path_results):
@@ -186,51 +185,46 @@ def main(args):
 
     csv_name = "synthetic_df.csv"
     accuracies = []
-    
-    if os.path.exists(path_progress):
-        with open(path_progress, "r") as f:
-            progress = json.load(f)
-    else:
-        progress = {}
-    if len(progress) > 0:
-        best_epoch = max(progress, key=lambda k: progress[k]["val_accuracy"])
-        best_accuracy = progress[best_epoch]["val_accuracy"]
-        path_PE_best = f"{synthetic_data_dir}/{best_epoch}/{csv_name}"
-    else:
-        best_accuracy = -1.0
-    
-    for e in range(args.epochs + 1):
-        if str(e) in progress:
-            accuracies.append(progress[str(e)]["val_accuracy"])
+    best_accuracy = -1.0
+    path_PE_best = f"{synthetic_data_dir}/0/{csv_name}"
+
     for epoch in tqdm(range(args.epochs + 1)):
-        if str(epoch) in progress:
-            cached = progress[str(epoch)]
+        epoch_results_file = os.path.join(output_dir, f"epoch_{epoch}_{classifier}_results.json")
+
+        if os.path.exists(epoch_results_file):
+            with open(epoch_results_file, "r") as f:
+                cached = json.load(f)
             logging.info(f"Epoch {epoch} -- val accuracy: {cached['val_accuracy']:.10f}, roc_auc: {cached['roc_auc']:.10f}, macro f1: {cached['f1']:.10f}, average 1-TVD: {cached.get('avg_1_tvd', -1):.3f}, average 2-TVD: {cached.get('avg_2_tvd', -1):.3f}, average 3-TVD: {cached.get('avg_3_tvd', -1):.3f} (cached)")
             accuracies.append(cached["val_accuracy"])
             if cached["val_accuracy"] > best_accuracy:
                 best_accuracy = cached["val_accuracy"]
                 path_PE_best = f"{synthetic_data_dir}/{epoch}/{csv_name}"
             continue
+
         df_train = pd.read_csv(f"{synthetic_data_dir}/{epoch}/{csv_name}")
         path_PE = f"{synthetic_data_dir}/{epoch}/{csv_name}"
         accuracy, roc_auc, f1 = run_classifier(df_train, df_val, columns, classifier)
 
-        progress[str(epoch)] = {
+        avg_1_tvd = avg_2_tvd = avg_3_tvd = -1
+        avg_1_tvd = average_k_tvd(df_train, df_priv, columns, K=1, num_bins=20)
+        avg_2_tvd = average_k_tvd(df_train, df_priv, columns, K=2, num_bins=20)
+        avg_3_tvd = average_k_tvd(df_train, df_priv, columns, K=3, num_bins=20)
+
+        epoch_results = {
             "val_accuracy": accuracy,
             "roc_auc": roc_auc,
-            "f1": f1
+            "f1": f1,
+            "avg_1_tvd": avg_1_tvd,
+            "avg_2_tvd": avg_2_tvd,
+            "avg_3_tvd": avg_3_tvd
         }
+        with open(epoch_results_file, "w") as f:
+            json.dump(epoch_results, f)
 
-        with open(path_progress, "w") as f:
-            json.dump(progress, f)
-                
         accuracies.append(accuracy)
         if accuracy > best_accuracy:
             best_accuracy = accuracy
             path_PE_best = path_PE
-        avg_1_tvd = average_k_tvd(df_train, df_priv, columns, K=1, num_bins=20)
-        avg_2_tvd = average_k_tvd(df_train, df_priv, columns, K=2, num_bins=20)
-        avg_3_tvd = average_k_tvd(df_train, df_priv, columns, K=3, num_bins=20)
         logging.info(f"Epoch {epoch} -- val accuracy: {accuracy:.10f}, roc_auc: {roc_auc:.10f}, macro f1: {f1:.10f}, average 1-TVD: {avg_1_tvd:.3f}, average 2-TVD: {avg_2_tvd:.3f}, average 3-TVD: {avg_3_tvd:.3f}")
         if args.epoch_test_acc:
             accuracy_test, roc_auc_test, f1_test = run_classifier(df_train, df_test, columns, classifier)
@@ -261,12 +255,14 @@ def main(args):
 
     df_pe_best = pd.read_csv(path_PE_best)
     accuracy_test, roc_auc_test, f1_test = run_classifier(df_pe_best, df_test, columns, classifier)
+    avg_1_tvd = avg_2_tvd = avg_3_tvd = -1
     avg_1_tvd = average_k_tvd(df_pe_best, df_priv, columns, K=1, num_bins=20)
     avg_2_tvd = average_k_tvd(df_pe_best, df_priv, columns, K=2, num_bins=20)
     avg_3_tvd = average_k_tvd(df_pe_best, df_priv, columns, K=3, num_bins=20)
     logging.info(f"Best Val: Test accuracy using best epoch according to val: {accuracy_test:.10f}, roc_auc: {roc_auc_test:.10f}, macro f1: {f1_test:.10f}, average 1-TVD: {avg_1_tvd:.3f}, average 2-TVD: {avg_2_tvd:.3f}, average 3-TVD: {avg_3_tvd:.3f}")
 
     accuracy_train, roc_auc_train, f1_train =  run_classifier(df_priv, df_test, columns, classifier)
+    avg_1_tvd = avg_2_tvd = avg_3_tvd = -1
     avg_1_tvd = average_k_tvd(df_test, df_priv, columns, K=1, num_bins=20)
     avg_2_tvd = average_k_tvd(df_test, df_priv, columns, K=2, num_bins=20)
     avg_3_tvd = average_k_tvd(df_test, df_priv, columns, K=3, num_bins=20)

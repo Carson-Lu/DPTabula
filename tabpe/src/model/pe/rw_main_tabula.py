@@ -325,19 +325,7 @@ def main(args):
 
     def variation_sample_tabula(sample, epoch_):
         s = copy.deepcopy(sample)
-        for i, c in enumerate(columns["numerical"] + columns["categorical"]):
-            if c in columns["numerical"]:
-                multiplier_range = auto_range(epoch_, args.epochs, args.variance_multiplier)
-                # Gaussian noise instead of uniform
-                s[i] += np.random.normal(0, multiplier_range) * (info[c]['max'] - info[c]['min'])
-                if s[i] < info[c]['min']:
-                    s[i] = info[c]['min']
-                if s[i] > info[c]['max']:
-                    s[i] = info[c]['max']
-            else:
-                probability = auto_range(epoch_, args.epochs, args.variance_multiplier)
-                if np.random.choice([0, 1], 1, p=[1.0 - probability, probability])[0] == 1:
-                    s[i] = random.choice(list(info[c].keys()))
+        # TODO
         return s
 
     # Select based on generator_method, same pattern as embed_fn
