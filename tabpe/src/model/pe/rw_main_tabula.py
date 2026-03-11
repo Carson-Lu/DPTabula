@@ -14,7 +14,7 @@ import safetensors
 from tqdm import tqdm
 from collections import defaultdict
 from pathlib import Path
-from transformers import AutoModel, AutoTokenizer
+from transformers import AutoModelForCausalLM, AutoTokenizer
 
 import logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(message)s', datefmt='%d-%b-%y %H:%M:%S')
@@ -123,6 +123,25 @@ def parse_args():
 
     return args
 
+def serialize_example(row_dict):
+    """Replicates BasicSerializerV2.serialize_example — matches Tabula-8B training format."""
+    return " ".join(f"The {k} is {v}." for k, v in row_dict.items())
+
+def serialize_choices(choices):
+    """Replicates BasicSerializerV2.serialize_choices."""
+    return "||" + "||".join(str(c) for c in choices) + "||"
+
+def build_generation_prompt(sample, all_cols, info, target_col):
+    possible_values = list(info[target_col].keys())
+    context = {c: sample[i] for i, c in enumerate(all_cols) if c != target_col}
+    context_str = serialize_example(context)
+    choices_str = serialize_choices(possible_values)
+    return (
+        f"Predict the value of {target_col}: {choices_str} "
+        f"{context_str} "
+        f"What is the value of {target_col}? {choices_str} <|endinput|>"
+    )
+
 class LLMEmbedder:
     def __init__(self, model_path, batch_size):
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -135,13 +154,14 @@ class LLMEmbedder:
         )
         self.tokenizer.pad_token = self.tokenizer.eos_token
 
-        self.model = AutoModel.from_pretrained(
+        self.model = AutoModelForCausalLM.from_pretrained(
             model_path,
             local_files_only=True,
             trust_remote_code=True
         ).to(self.device)
 
         self.model.eval()
+        self.model = self.model.half()
 
     def embed(self, samples, columns):
         df = pd.DataFrame(samples, columns=columns)
@@ -153,13 +173,54 @@ class LLMEmbedder:
 
             inputs = self.tokenizer(texts, return_tensors="pt", padding=True, truncation=True).to(self.device)
             with torch.inference_mode():
-                emb = self.model(**inputs).last_hidden_state.mean(dim=1)
+                outputs = self.model(**inputs, output_hidden_states=True)
+                emb = outputs.hidden_states[-1].mean(dim=1)
 
-            embeddings.append(emb.cpu().numpy())
-            del inputs, emb
+            embeddings.append(emb.cpu().float().numpy())
+            del inputs, outputs, emb
             torch.cuda.empty_cache()
 
         return np.vstack(embeddings).astype(np.float32)
+    
+    def generate_categorical(self, sample, all_cols, info, target_col):
+        """Score each candidate value using model log-probs — matches Tabula-8B inference."""
+        possible_values = list(info[target_col].keys())
+        prompt = build_generation_prompt(sample, all_cols, info, target_col)
+
+        prompt_inputs = self.tokenizer(prompt, return_tensors="pt").to(self.device)
+        prompt_len = prompt_inputs["input_ids"].shape[1]
+
+        log_probs = []
+        for value in possible_values:
+            value_ids = self.tokenizer(
+                str(value), return_tensors="pt", add_special_tokens=False
+            ).input_ids.to(self.device)
+
+            # Full sequence: prompt + candidate value
+            full_ids = torch.cat([prompt_inputs["input_ids"], value_ids], dim=1)
+
+            with torch.inference_mode():
+                outputs = self.model(full_ids)
+                logits = outputs.logits  # [1, seq_len, vocab_size]
+
+            # Score only the value tokens (positions after the prompt)
+            value_len = value_ids.shape[1]
+            value_logits = logits[0, prompt_len - 1: prompt_len - 1 + value_len, :]
+            value_log_probs = torch.nn.functional.log_softmax(value_logits, dim=-1)
+
+            score = sum(
+                value_log_probs[t, value_ids[0, t]].item()
+                for t in range(value_len)
+            )
+            log_probs.append(score)
+
+            del value_ids, full_ids, outputs, logits
+            torch.cuda.empty_cache()
+
+        # Convert to probabilities and sample
+        log_probs_tensor = torch.tensor(log_probs, dtype=torch.float32)
+        probs = torch.softmax(log_probs_tensor, dim=0).numpy()
+        return np.random.choice(possible_values, p=probs)
 
 def main(args):
     # ADDED ==============================================================
@@ -257,16 +318,18 @@ def main(args):
     # ADDED ===============================================================
     all_columns = columns["numerical"] + columns["categorical"]
 
-    if args.compare_method == "tabula":
-        logging.info("Using LLM embedding backend")
+    needs_embedder = args.compare_method == "tabula" or args.generator_method == "tabula"
 
+    if needs_embedder:
+        logging.info("Loading LLM embedder (needed for compare or generate)")
         embedder = LLMEmbedder(args.model_path, args.batch_size)
 
+    if args.compare_method == "tabula":
+        logging.info("Using LLM embedding backend")
         def embed_fn(samples):
             return embedder.embed(samples, all_columns)
     else:
         logging.info("Using TabPE embedding backend")
-
         def embed_fn(samples):
             return tabpe_get_embeddings(samples, columns, info)
 
@@ -325,7 +388,17 @@ def main(args):
 
     def variation_sample_tabula(sample, epoch_):
         s = copy.deepcopy(sample)
-        # TODO
+        for i, c in enumerate(all_columns):
+            if c in columns["numerical"]:
+                # Numerical: same perturbation as tabpe — LLM not trained for numerical generation
+                multiplier_range = auto_range(epoch_, args.epochs, args.variance_multiplier)
+                s[i] += random.uniform(-multiplier_range, multiplier_range) * (info[c]['max'] - info[c]['min'])
+                s[i] = max(info[c]['min'], min(info[c]['max'], s[i]))
+            else:
+                # Categorical: use LLM with decaying mutation probability
+                probability = auto_range(epoch_, args.epochs, args.variance_multiplier)
+                if np.random.choice([0, 1], 1, p=[1.0 - probability, probability])[0] == 1:
+                    s[i] = embedder.generate_categorical(s, all_columns, info, c)
         return s
 
     # Select based on generator_method, same pattern as embed_fn

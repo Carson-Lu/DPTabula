@@ -182,6 +182,8 @@ def main(args):
     df_test = pd.read_csv(args.priv_test_csv)
     df_priv_all = pd.concat([df_priv, df_val, df_test])
     info = get_info(df_priv_all, columns)
+    
+    del df_priv_all
 
     csv_name = "synthetic_df.csv"
     accuracies = []
@@ -237,7 +239,7 @@ def main(args):
             torch.cuda.empty_cache()
 
     plt.plot(range(len(accuracies)), accuracies)
-    plt.savefig(f"{output_dir}/accuracies_validation.png")
+    plt.savefig(f"{output_dir}/accuracies_{classifier}_validation.png")
     plt.close()
 
     # last epoch test accuracy

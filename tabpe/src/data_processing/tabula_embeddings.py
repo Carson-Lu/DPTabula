@@ -26,10 +26,22 @@ class TabulaEmbedder:
         if checkpoint_dir:
             checkpoint_dir.mkdir(parents=True, exist_ok=True)
 
-        # Number of rows per checkpoint
         step = max(1, (total * save_every_percent + 99) // 100)
 
-        for i in range(0, total, self.batch_size):
+        # Find the latest checkpoint and resume from it
+        start_row = 0
+        if checkpoint_dir:
+            existing = sorted(checkpoint_dir.glob("checkpoint_*.safetensors"))
+            if existing:
+                latest = existing[-1]
+                print(f"Resuming from checkpoint: {latest}", flush=True)
+                from safetensors.torch import load_file
+                loaded = load_file(str(latest))
+                embeddings.append(loaded["embeddings"])
+                start_row = len(loaded["embeddings"])  # skip already-embedded rows
+                print(f"Skipping first {start_row} rows", flush=True)
+
+        for i in range(start_row, total, self.batch_size):
             batch = df.iloc[i : i + self.batch_size]
             texts = [", ".join(f"{c}: {v}" for c, v in row.items()) for _, row in batch.iterrows()]
 
