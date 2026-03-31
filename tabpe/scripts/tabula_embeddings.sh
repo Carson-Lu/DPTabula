@@ -3,8 +3,8 @@
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=1
-#SBATCH --mem=32G
-#SBATCH --time=4:00:00
+#SBATCH --mem=40G
+#SBATCH --time=16:00:00
 #SBATCH --gres=gpu:a100:1 
 #SBATCH --mail-user=clu56@student.ubc.ca
 #SBATCH --mail-type=FAIL
@@ -16,7 +16,7 @@
 # ----- Default parameters -----
 dataset="adult"
 seed=42
-batch_size=1
+batch_size=8
 
 while [[ "$#" -gt 0 ]]; do
     case $1 in

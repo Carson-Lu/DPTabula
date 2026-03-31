@@ -13,7 +13,7 @@ import safetensors.torch
 from tqdm import tqdm
 from collections import defaultdict
 from pathlib import Path
-from transformers import AutoModel, AutoTokenizer
+from transformers import AutoModelForCausalLM, AutoModel, AutoTokenizer
 from sklearn.cluster import KMeans
 
 import logging
@@ -55,16 +55,33 @@ def get_vector(s, columns, info):
             vector += vector_add
     return vector
 
-# MODIFIED =========================================================
 def tabpe_get_embeddings(samples, columns, info):
     return np.array([get_vector(s, columns, info) for s in samples])
-# END OF MODIFIED ==================================================
 
 def try_float(x):
     try:
         return float(x)
     except Exception as e:
         return 0
+
+def serialize_example(row_dict):
+    """Replicates BasicSerializerV2.serialize_example — matches Tabula-8B training format."""
+    return " ".join(f"The {k} is {v}." for k, v in row_dict.items())
+
+def serialize_choices(choices):
+    """Replicates BasicSerializerV2.serialize_choices."""
+    return "||" + "||".join(str(c) for c in choices) + "||"
+
+def build_generation_prompt(sample, all_cols, info, target_col):
+    possible_values = list(info[target_col].keys())
+    context = {c: sample[i] for i, c in enumerate(all_cols) if c != target_col}
+    context_str = serialize_example(context)
+    choices_str = serialize_choices(possible_values)
+    return (
+        f"Predict the value of {target_col}: {choices_str} "
+        f"{context_str} "
+        f"What is the value of {target_col}? {choices_str} <|endinput|>"
+    )
 
 def parse_args():
     parser = argparse.ArgumentParser(description='PE for tabular data')
@@ -77,17 +94,14 @@ def parse_args():
     parser.add_argument('--gamma', default=0.2, type=float, help='Gamma for decay')
     parser.add_argument('--output_dir', default=None, type=str, help='Output directory')
     parser.add_argument('--epsilon', default=-1, type=float, help='Privacy epsilon value')
-
-    # ADDED ==============================================================
     parser.add_argument('--model_path', type=str, required=True, help='Path to embedding model')
     parser.add_argument('--batch_size', type=int, default=4, help='Batch size for embedding generation')
-    parser.add_argument('--generator_method', type=str, default='tabula', help='Which generator to use')
-    parser.add_argument('--compare_method', type=str, default='tabula', help='Which comparison method to use')
+    parser.add_argument('--generator_method', type=str, default='tabpe', help='Which generator to use (tabpe or tabula)')
+    parser.add_argument('--compare_method', type=str, default='tabpe', help='Which comparison method to use (tabpe or tabula)')
     parser.add_argument('--priv_train_emb', default=None, type=str, help='Path to precomputed private embeddings (safetensors)')
-    parser.add_argument('--seed', type=int, default=42, help='randomization seed')
+    parser.add_argument('--seed', type=int, default=42, help='Randomization seed')
     parser.add_argument('--num_clusters', type=int, default=10, help='Number of clusters to use')
     parser.add_argument('--per_class_kmeans', type=bool, default=True, help='Whether to perform k-means per class or on the whole dataset')
-    # END OF ADDED ========================================================
     args = parser.parse_args()
 
     return args
@@ -104,7 +118,7 @@ class LLMEmbedder:
         )
         self.tokenizer.pad_token = self.tokenizer.eos_token
 
-        self.model = AutoModel.from_pretrained(
+        self.model = AutoModelForCausalLM.from_pretrained(
             model_path,
             local_files_only=True,
             trust_remote_code=True
@@ -123,22 +137,108 @@ class LLMEmbedder:
 
             inputs = self.tokenizer(texts, return_tensors="pt", padding=True, truncation=True).to(self.device)
             with torch.inference_mode():
-                emb = self.model(**inputs).last_hidden_state.mean(dim=1)
+                outputs = self.model(**inputs, output_hidden_states=True)
+                emb = outputs.hidden_states[-1].mean(dim=1)
 
-            embeddings.append(emb.cpu().numpy())
-            del inputs, emb
+            embeddings.append(emb.cpu().float().numpy())
+            del inputs, outputs, emb
             torch.cuda.empty_cache()
 
-        return np.vstack(embeddings)
+        return np.vstack(embeddings).astype(np.float32)
+
+    def generate_categorical(self, sample, all_cols, info, target_col):
+        """Score each candidate value using model log-probs — matches Tabula-8B inference."""
+        possible_values = list(info[target_col].keys())
+        prompt = build_generation_prompt(sample, all_cols, info, target_col)
+
+        prompt_inputs = self.tokenizer(prompt, return_tensors="pt").to(self.device)
+        prompt_len = prompt_inputs["input_ids"].shape[1]
+
+        log_probs = []
+        for value in possible_values:
+            value_ids = self.tokenizer(
+                str(value), return_tensors="pt", add_special_tokens=False
+            ).input_ids.to(self.device)
+
+            full_ids = torch.cat([prompt_inputs["input_ids"], value_ids], dim=1)
+
+            with torch.inference_mode():
+                outputs = self.model(full_ids)
+                logits = outputs.logits  # [1, seq_len, vocab_size]
+
+            value_len = value_ids.shape[1]
+            value_logits = logits[0, prompt_len - 1: prompt_len - 1 + value_len, :]
+            value_log_probs = torch.nn.functional.log_softmax(value_logits, dim=-1)
+
+            score = sum(
+                value_log_probs[t, value_ids[0, t]].item()
+                for t in range(value_len)
+            )
+            log_probs.append(score)
+
+            del value_ids, full_ids, outputs, logits
+            torch.cuda.empty_cache()
+
+        log_probs_tensor = torch.tensor(log_probs, dtype=torch.float32)
+        probs = torch.softmax(log_probs_tensor, dim=0).numpy()
+        return np.random.choice(possible_values, p=probs)
+
+
+def dp_resample_synthetic(
+    syn_embeddings,
+    real_data_embeddings,
+    noise_multiplier,
+    num_synthetic_samples,
+    num_clusters=10
+):
+    K = num_clusters
+
+    # K-means on synthetic embeddings
+    kmeans = KMeans(n_clusters=K, random_state=0).fit(syn_embeddings)
+    clusters = kmeans.labels_
+    centroids = kmeans.cluster_centers_
+
+    # LINE 3-8
+    h = np.zeros(K)
+    for e in real_data_embeddings:
+        h[np.argmin(np.linalg.norm(e - centroids, axis=1))] += 1
+
+    sigma = noise_multiplier
+    noisy_h = np.maximum(h + np.random.normal(0, sigma, size=K), 0)
+    if noisy_h.sum() == 0:
+        p = np.ones(K) / K
+    else:
+        p = noisy_h / noisy_h.sum()
+
+    # LINE 9-14
+    sampled_indices = []
+    floor_counts = []
+    for k in range(K):
+        cluster_idx = np.where(clusters == k)[0]
+        n_samples = int(np.floor(num_synthetic_samples * p[k]))
+        floor_counts.append(n_samples)
+        if n_samples > 0 and len(cluster_idx) > 0:
+            replace = n_samples > len(cluster_idx)
+            sampled_indices.extend(np.random.choice(cluster_idx, n_samples, replace=replace))
+            
+    # leftover counts from flooring
+    leftover = num_synthetic_samples - sum(floor_counts)
+    if leftover > 0:
+        fractional_remainders = [num_synthetic_samples * p[k] - floor_counts[k] for k in range(K)]
+        for idx in np.argsort(fractional_remainders)[::-1][:leftover]:
+            cluster_idx = np.where(clusters == idx)[0]
+            if len(cluster_idx) > 0:
+                sampled_indices.extend(np.random.choice(cluster_idx, 1, replace=False))
+
+    return p, sampled_indices
+
 
 def main(args):
-    # ADDED ==============================================================
     seed = args.seed
     random.seed(seed)
     np.random.seed(seed)
     torch.manual_seed(seed)
     torch.cuda.manual_seed_all(seed)
-    # END OF ADDED ========================================================
 
     with open(args.metadata_path, 'r') as f:
         columns = json.load(f)
@@ -224,84 +324,96 @@ def main(args):
                 label = row[columns["label"]]
                 values = [float(row[c]) for c in columns["numerical"]] + [row[c] for c in columns["categorical"]]
                 public[label].append(values)
-    
-    # ADDED ===============================================================
+
     all_columns = columns["numerical"] + columns["categorical"]
+
+    # Load LLM embedder if needed for either role
+    needs_embedder = args.compare_method == "tabula" or args.generator_method == "tabula"
+    if needs_embedder:
+        logging.info("Loading LLM embedder (needed for compare or generate)")
+        embedder = LLMEmbedder(args.model_path, args.batch_size)
 
     if args.compare_method == "tabula":
         logging.info("Using LLM embedding backend")
-
-        embedder = LLMEmbedder(args.model_path, args.batch_size)
-
         def embed_fn(samples):
             return embedder.embed(samples, all_columns)
     else:
         logging.info("Using TabPE embedding backend")
-
         def embed_fn(samples):
             return tabpe_get_embeddings(samples, columns, info)
-        
+
     private_embedding_cache = {}
     if args.compare_method == "tabula" and args.priv_train_emb is not None:
-        # Load the embeddings from safetensors
         embeddings_dict = safetensors.torch.load_file(args.priv_train_emb)
-        embeddings = embeddings_dict['embeddings']  # tensor of shape [num_samples, embedding_dim]
+        embeddings = embeddings_dict['embeddings']
         logging.info("Private embeddings loaded from safetensors")
-        # Split by label if needed
-        # Assumes you saved embeddings in the same order as `private`
         start_idx = 0
         for label in private:
             n = len(private[label])
             private_embedding_cache[label] = embeddings[start_idx:start_idx + n].cpu().numpy()
             start_idx += n
     else:
-        # Fallback: embed private data on the fly
         logging.warning("WARNING: No precomputed private embeddings found, embedding on the fly")
         private_embedding_cache = {
             label: embed_fn(private[label])
             for label in private
         }
-    # END OF ADDED ========================================================
+
+    def linear_range(epoch_, T, base, floor=0.02):
+        t = epoch_ / T
+        return base - (base - floor) * t
+
+    def var_range(epoch_, T, base, floor=0.02):
+        t = epoch_ / T
+        return base - (base - floor) * (t**args.gamma)
+
+    def auto_range(epoch_, T, base, floor=0.02):
+        if args.decay_type == 'linear':
+            return linear_range(epoch_, T, base, floor)
+        elif args.decay_type == 'polynomial':
+            return var_range(epoch_, T, base, floor)
+        else:
+            raise ValueError(f'Invalid decay type: {args.decay_type}')
+
+    def variation_sample_tabpe(sample, epoch_):
+        s = copy.deepcopy(sample)
+        for i, c in enumerate(columns["numerical"] + columns["categorical"]):
+            if c in columns["numerical"]:
+                multiplier_range = auto_range(epoch_, args.epochs, args.variance_multiplier)
+                s[i] += random.uniform(-multiplier_range, multiplier_range) * (info[c]['max'] - info[c]['min'])
+                if s[i] < info[c]['min']:
+                    s[i] = info[c]['min']
+                if s[i] > info[c]['max']:
+                    s[i] = info[c]['max']
+            else:
+                probability = auto_range(epoch_, args.epochs, args.variance_multiplier)
+                if np.random.choice([0, 1], 1, p=[1.0 - probability, probability])[0] == 1:
+                    s[i] = random.choice(list(info[c].keys()))
+        return s
+
+    def variation_sample_tabula(sample, epoch_):
+        s = copy.deepcopy(sample)
+        for i, c in enumerate(all_columns):
+            if c in columns["numerical"]:
+                multiplier_range = auto_range(epoch_, args.epochs, args.variance_multiplier)
+                s[i] += random.uniform(-multiplier_range, multiplier_range) * (info[c]['max'] - info[c]['min'])
+                s[i] = max(info[c]['min'], min(info[c]['max'], s[i]))
+            else:
+                probability = auto_range(epoch_, args.epochs, args.variance_multiplier)
+                if np.random.choice([0, 1], 1, p=[1.0 - probability, probability])[0] == 1:
+                    s[i] = embedder.generate_categorical(s, all_columns, info, c)
+        return s
+
+    if args.generator_method == "tabula":
+        logging.info("Using tabula variation backend")
+        variation_sample = variation_sample_tabula
+    else:
+        logging.info("Using tabpe variation backend")
+        variation_sample = variation_sample_tabpe
 
     for epoch in tqdm(range(max(e, 1), 1 + args.epochs), desc="Epochs"):
-        def linear_range(epoch_, T, base, floor=0.02):
-            t = epoch_ / T
-            return base - (base - floor) * t
-        
-        def var_range(epoch_, T, base, floor=0.02):
-            t = epoch_ / T
-            return base - (base - floor) * (t**args.gamma)  # quadratic decay
-
-        def auto_range(epoch_, T, base, floor=0.02):
-            if args.decay_type == 'linear':
-                return linear_range(epoch_, T, base, floor)
-            elif args.decay_type == 'polynomial':
-                return var_range(epoch_, T, base, floor)
-            else:
-                raise ValueError(f'Invalid decay type: {args.decay_type}')
-
-        # logging.info(f'Epoch {epoch}')
-        def variation_sample(sample, epoch_=epoch):
-            s = copy.deepcopy(sample)
-            for i, c in enumerate(columns["numerical"] + columns["categorical"]):
-                if c in columns["numerical"]:
-                    # Always add noise first
-                    multiplier_range = auto_range(epoch_, args.epochs, args.variance_multiplier)
-                    s[i] += random.uniform(-multiplier_range, multiplier_range) * (info[c]['max'] - info[c]['min'])
-                    
-                    if s[i] < info[c]['min']:
-                        s[i] = info[c]['min']
-                    if s[i] > info[c]['max']:
-                        s[i] = info[c]['max']
-                else:
-                    probability = auto_range(epoch_, args.epochs, args.variance_multiplier)
-                    if np.random.choice([0, 1], 1, p=[1.0 - probability, probability])[0] == 1:
-                        s[i] = random.choice(list(info[c].keys()))
-            return s
-
         public_new = defaultdict(list)
         for label in public:
-            # Get vote counts for this label's samples
             label_public = public[label]
             label_embeddings = embed_fn(label_public)
             
@@ -313,11 +425,9 @@ def main(args):
                 num_clusters=int(args.num_clusters)
             )
 
-            # Generate variations for sampled data
             for idx in sampled_indices:
-                variation = variation_sample(label_public[idx])
+                variation = variation_sample(label_public[idx], epoch)
                 public_new[label].append(variation)
-
 
         os.makedirs(f'{args.output_dir}/{epoch}', exist_ok=True)
         with open(f'{args.output_dir}/{epoch}/synthetic_df.csv', 'w') as f:
@@ -334,55 +444,6 @@ def main(args):
     logging.info(f'PE finished')
 
     return args
-
-
-def dp_resample_synthetic(
-    syn_embeddings,
-    real_data_embeddings,
-    noise_multiplier,
-    num_synthetic_samples,
-    num_clusters=10
-):
-    K = num_clusters
-
-    # K-means on synthetic embeddings
-    kmeans = KMeans(n_clusters=K, random_state=0).fit(syn_embeddings)
-    clusters = kmeans.labels_
-    centroids = kmeans.cluster_centers_
-
-    # LINE 3-8
-    h = np.zeros(K)
-    for e in real_data_embeddings:
-        h[np.argmin(np.linalg.norm(e - centroids, axis=1))] += 1
-
-    sigma = noise_multiplier
-    noisy_h = np.maximum(h + np.random.normal(0, sigma, size=K), 0)
-    if noisy_h.sum() == 0:
-        p = np.ones(K) / K
-    else:
-        p = noisy_h / noisy_h.sum()
-
-    # LINE 9-14
-    sampled_indices = []
-    floor_counts = []
-    for k in range(K):
-        cluster_idx = np.where(clusters == k)[0]
-        n_samples = int(np.floor(num_synthetic_samples * p[k]))
-        floor_counts.append(n_samples)
-        if n_samples > 0 and len(cluster_idx) > 0:
-            replace = n_samples > len(cluster_idx)
-            sampled_indices.extend(np.random.choice(cluster_idx, n_samples, replace=replace))
-            
-    # leftover counts from flooring
-    leftover = num_synthetic_samples - sum(floor_counts)
-    if leftover > 0:
-        fractional_remainders = [num_synthetic_samples * p[k] - floor_counts[k] for k in range(K)]
-        for idx in np.argsort(fractional_remainders)[::-1][:leftover]:
-            cluster_idx = np.where(clusters == idx)[0]
-            if len(cluster_idx) > 0:
-                sampled_indices.extend(np.random.choice(cluster_idx, 1, replace=False))
-
-    return p, sampled_indices
 
 if __name__ == "__main__":
     args = parse_args()
