@@ -4,7 +4,7 @@ import torch as pt
 from collections import namedtuple
 from torchvision import transforms, datasets
 from torch.utils.data import Dataset
-from aux import flip_mnist_data
+from aux_funcs import flip_mnist_data
 from synth_data_2d import make_data_from_specstring, string_to_specs
 
 

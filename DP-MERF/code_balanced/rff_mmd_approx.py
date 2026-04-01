@@ -1,7 +1,7 @@
 import numpy as np
 import torch as pt
 from collections import namedtuple
-from aux import flat_data
+from aux_funcs import flat_data
 
 rff_param_tuple = namedtuple('rff_params', ['w', 'b'])
 

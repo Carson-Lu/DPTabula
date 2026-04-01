@@ -1,0 +1,12 @@
+torch
+torchvision
+numpy
+scipy
+pandas
+scikit-learn
+matplotlib
+seaborn
+tensorboardX
+backpack-for-pytorch
+autodp
+sdgym

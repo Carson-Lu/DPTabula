@@ -4,7 +4,7 @@ from torch.optim.lr_scheduler import StepLR
 import argparse
 import numpy as np
 from models_gen import FCCondGen, ConvCondGen
-from aux import plot_mnist_batch, log_args, flatten_features, log_final_score
+from aux_funcs import plot_mnist_batch, log_args, flatten_features, log_final_score
 from data_loading import get_dataloaders
 from rff_mmd_approx import get_rff_losses
 from synth_data_benchmark import test_gen_data, test_passed_gen_data, datasets_colletion_def
