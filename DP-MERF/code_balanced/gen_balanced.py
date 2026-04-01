@@ -147,25 +147,37 @@ def get_args():
 
 
 def preprocess_args(ar):
-	if ar.log_dir is None:
-		assert ar.log_name is not None
-		ar.log_dir = ar.base_log_dir + ar.log_name + "/"
-	if not os.path.exists(ar.log_dir):
-		os.makedirs(ar.log_dir)
+    if ar.log_dir is None:
+        if ar.log_name is None:
+            vote_str = (
+                f"_vote{ar.vote_rounds}"
+                f"_gen{ar.sample_generator_factor}"
+                f"_rand{ar.random_sample_factor}"
+            ) if not ar.skip_vote else "_no_vote"
+            
+            ar.log_name = (
+                f"dpmerf_{ar.data}"
+                f"_ep{ar.epochs}"
+                f"_noise{ar.noise_factor}"
+                + vote_str
+            )
+        ar.log_dir = ar.base_log_dir + ar.log_name + "/"
+    if not os.path.exists(ar.log_dir):
+        os.makedirs(ar.log_dir)
 
-	if ar.seed is None:
-		ar.seed = np.random.randint(0, 1000)
-	assert ar.data in {"digits", "fashion", "2d"}
-	if ar.rff_sigma is None:
-		ar.rff_sigma = "105" if ar.data == "digits" else "127"
+    if ar.seed is None:
+        ar.seed = np.random.randint(0, 1000)
+    assert ar.data in {"digits", "fashion", "2d"}
+    if ar.rff_sigma is None:
+        ar.rff_sigma = "105" if ar.data == "digits" else "127"
 
-	if ar.loss_type == "kmeans" and ar.tgt_epsilon > 0.0:
-		assert ar.center_data, "dp kmeans requires centering of data"
+    if ar.loss_type == "kmeans" and ar.tgt_epsilon > 0.0:
+        assert ar.center_data, "dp kmeans requires centering of data"
 
-	if ar.data == "2d":
-		ar.conv_gen = False
-	else:
-		ar.conv_gen = True
+    if ar.data == "2d":
+        ar.conv_gen = False
+    else:
+        ar.conv_gen = True
 
 
 def synthesize_data_with_uniform_labels(gen, device, gen_batch_size=1000, n_data=60000, n_labels=10):

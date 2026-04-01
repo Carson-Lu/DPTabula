@@ -15,7 +15,7 @@ To run the experiments, use the following settings
 #### DP-MERF
 epsilon = 1.0
 - `python gen_balanced.py --data 2d -noise 5. --synth-spec-string norm_k5_n100000_row5_col5_noise0.2 -ep 50 --log-name dpmerf_syn2d_exp --gen-spec 200,500,500,200 --rff-sigma 0.50 -lr 3e-3 --d-rff 30000`
-- `python gen_balanced.py --log-name dpmerf_syn2d_exp --sample_generator_factor 0 --random_sample_factor 1 --vote_rounds 5 -ep 5 --data 2d -noise 5. --synth-spec-string norm_k5_n100000_row5_col5_noise0.2  --gen-spec 200,500,500,200 --rff-sigma 0.50 -lr 3e-3 --d-rff 30000 `
+- `python gen_balanced.py --sample_generator_factor 0 --random_sample_factor 1 --vote_rounds 5 -ep 5 --data 2d -noise 5. --synth-spec-string norm_k5_n100000_row5_col5_noise0.2  --gen-spec 200,500,500,200 --rff-sigma 0.50 -lr 3e-3 --d-rff 30000 `
 #### DP-CGAN
 this code is found in the `../dpcgan/` directory.
 
