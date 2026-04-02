@@ -180,7 +180,8 @@ def plot_data(data, labels, save_str, class_centers=None, subsample=None, center
   plt.xlabel('x')
   plt.ylabel('y')
   # plt.legend()
-  plt.savefig(f'{save_str}.png')
+  plt.savefig(f'{save_str}.png', bbox_inches='tight')
+  plt.close()
 
 
 def specs_to_string(n_classes, n_samples, n_rows, n_cols, noise_scale, discrete):
