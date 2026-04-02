@@ -8,7 +8,7 @@ ENV
 cc_env
 WHEELS
 venv
-args_logs
+args_log
 eval_score
 final_score
 gen_data.npz
