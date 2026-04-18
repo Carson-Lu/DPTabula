@@ -12,3 +12,4 @@ args_log
 eval_score
 final_score
 gen_data.npz
+logs/

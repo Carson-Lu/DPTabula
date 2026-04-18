@@ -132,12 +132,13 @@ def get_args():
 	parser.add_argument("--test-split", type=float, default=0.1, help="only relevant for synth_2d so far")
 
 	# ============== NEW ARGUMENTS ==============
-	parser.add_argument("--sample_generator_factor", type=float, default=0)  # FOR VOTING will sample from generator. 0 means only sample the initial time
-	parser.add_argument("--random_sample_factor", type=float, default=0)  # 0 means no random sampling
+	parser.add_argument("--sample_generator_factor", type=float, default=0, help="proportion of synthetic data to generate, relative to number of synthetic samples to generate")  # FOR VOTING will sample from generator. 0 means only sample the initial time
+	parser.add_argument("--random_sample_factor", type=float, default=0, help="proportion of random data to sample, relative to number of synthetic samples to generate")  # 0 means no random sampling
 	parser.add_argument("--noise_multiplier_vote", type=float, default=1.0)
 	parser.add_argument("--vote_rounds", type=int, default=1)
 	parser.add_argument("--skip_vote", action="store_true", default=False)
-	parser.add_argument("--num_synth", type=int, default=None, help="number of synthetic data points to generate, default is same as original data size")
+	parser.add_argument("--num_synth_factor", type=float, default=1, help="proportion of synthetic data to generate, relative to original")
+	parser.add_argument("--initial_population_factor", type=float, default=1, help="for voting, proportion of synthetic data to start with, relative to number of synthetic samples to generate")
 	# parser.add_argument("--metadata_path", default=None, type=str, help="Path to metadata json file")
 
 	ar = parser.parse_args()
@@ -148,6 +149,8 @@ def get_args():
 
 
 def preprocess_args(ar):
+    ar.base_log_dir = os.path.abspath(ar.base_log_dir) + "/"
+    
     if ar.log_dir is None:
         if ar.log_name is None:
             ar.log_name = (
@@ -162,6 +165,8 @@ def preprocess_args(ar):
             ar.log_dir = os.path.join(
                 base,
                 f"noise_multiplier_{ar.noise_multiplier_vote}",
+                f"syn_factor_{ar.num_synth_factor}",
+                f"initial_pop_{ar.initial_population_factor}",
                 f"gen_factor_{ar.sample_generator_factor}",
                 f"rand_factor_{ar.random_sample_factor}",
             ) + "/"
@@ -205,6 +210,22 @@ def synthesize_data_with_uniform_labels(gen, device, gen_batch_size=1000, n_data
 			data_list.append(gen_samples)
 	return pt.cat(data_list, dim=0).cpu().numpy(), pt.cat(labels_list, dim=0).cpu().numpy()
 
+def synthesize_data_for_label(gen, device, label, n_samples, gen_batch_size=1000):
+    gen.eval()
+    data_list = []
+    label_tensor = pt.full((gen_batch_size, 1), label, dtype=pt.long).to(device)
+    
+    remaining = n_samples
+    with pt.no_grad():
+        while remaining > 0:
+            batch = min(gen_batch_size, remaining)
+            label_tensor = pt.full((batch, 1), label, dtype=pt.long).to(device)
+            gen_code, gen_labels = gen.get_code(batch, device, labels=label_tensor)
+            gen_samples = gen(gen_code)
+            data_list.append(gen_samples)
+            remaining -= batch
+
+    return pt.cat(data_list, dim=0).cpu().numpy()
 
 def test_results(data_key, log_name, log_dir, data_tuple, eval_func):
 	if data_key in {"digits", "fashion"}:
@@ -248,7 +269,7 @@ def main():
 
 	if os.path.isfile(ar.model_pt_path):
 		print("Existing model found, loading...")
-		gen.load_state_dict(pt.load(ar.model_pt_path))
+		gen.load_state_dict(pt.load(ar.model_pt_path, map_location=device))
 	else:
 		print("No existing model found, training from scratch...")
 		minibatch_loss, single_release_loss = get_losses(ar, data_pkg.train_loader, device, data_pkg.n_features, data_pkg.n_labels)
@@ -272,8 +293,6 @@ def main():
 		# save trained model and data
 		pt.save(gen.state_dict(), ar.model_pt_path) 
   
-	if ar.num_synth is None:
-		ar.num_synth = data_pkg.n_data
 	if ar.create_dataset:
 		data_id = "synthetic_mnist" if ar.data in {"digits", "fashion"} else "gen_data"
 
@@ -283,6 +302,9 @@ def main():
 			syn_data, syn_labels = synthesize_data_with_uniform_labels(gen, device, gen_batch_size=ar.gen_batch_size, n_data=data_pkg.n_data, n_labels=data_pkg.n_labels)
 		else:
 			print("DP-MERF with DP-Histogram voting")
+			num_samples_to_generate = int(data_pkg.n_data * ar.num_synth_factor)
+			assert (ar.initial_population_factor + ar.sample_generator_factor + ar.random_sample_factor) > 1, "Not enough initial synthetic data to start voting. Please increase initial_population_factor or decrease synth_factor, sample_generator_factor or random_sample_factor."
+ 
 			columns = {"numerical": ["x", "y"], "categorical": [], "label": "label"}
 
 			real_data = data_pkg.train_data.data
@@ -292,7 +314,7 @@ def main():
 				real_labels = real_labels.cpu().numpy().flatten().astype(int)
 
 			info = get_info_gaussian(real_data, columns["numerical"])
-			n_per_class = data_pkg.n_data // data_pkg.n_labels
+			n_per_class = int(num_samples_to_generate / data_pkg.n_labels)
 			
 			private_embeddings_per_class = {}
 			
@@ -300,7 +322,7 @@ def main():
 				real_class = real_data[real_labels == label].tolist()
 				private_embeddings_per_class[label] = get_embeddings(real_class, columns, info)
 
-			syn_data_raw, syn_labels_raw = synthesize_data_with_uniform_labels(gen, device, gen_batch_size=ar.gen_batch_size, n_data=data_pkg.n_data, n_labels=data_pkg.n_labels)
+			syn_data_raw, syn_labels_raw = synthesize_data_with_uniform_labels(gen, device, gen_batch_size=ar.gen_batch_size, n_data=int(data_pkg.n_data * ar.initial_population_factor), n_labels=data_pkg.n_labels)
 			syn_labels_raw = syn_labels_raw.flatten().astype(int)
 
 			syn_per_class = {
@@ -323,11 +345,11 @@ def main():
 
 					if ar.sample_generator_factor > 0:
 						n_gen = int(n_per_class * ar.sample_generator_factor)
-						gen_data, gen_lbls = synthesize_data_with_uniform_labels(
-							gen, device, gen_batch_size=ar.gen_batch_size,
-							n_data=n_gen * data_pkg.n_labels, n_labels=data_pkg.n_labels
+						gen_samples = synthesize_data_for_label(
+							gen, device, label, n_gen,
+							gen_batch_size=ar.gen_batch_size
 						)
-						syn_class = syn_class + gen_data[gen_lbls.flatten().astype(int) == label].tolist()
+						syn_class = syn_class + gen_samples.tolist()
 
 					public_embeddings = get_embeddings(syn_class, columns, info)
 					best, _, _ = vote(
@@ -338,7 +360,7 @@ def main():
 						noise_multiplier=ar.noise_multiplier_vote
 					)
 					syn_per_class[label] = best
-				# PLOT CURRENT SYNTHETIC 
+				# PLOT CURRENT SYNTHETIC
 				syn_data_iter   = np.array([s for label in range(data_pkg.n_labels) for s in syn_per_class[label]])
 				syn_labels_iter = np.array([label for label in range(data_pkg.n_labels) for _ in syn_per_class[label]])
 
@@ -347,14 +369,13 @@ def main():
 					data_pkg.train_data.data, data_pkg.train_data.targets,
 					data_pkg.test_data.data, data_pkg.test_data.targets
 				)
-				path = ar.log_dir + f"iteration_{i}"
-				iter_dir = os.path.join(ar.log_dir, path)
+				iter_dir = os.path.join(ar.log_dir, f"iteration_{i}")
 				os.makedirs(iter_dir, exist_ok=True)
-				plot_curr(data_tuple_iter, iter_dir, path)
+				plot_curr(data_tuple_iter, iter_dir, f"iteration_{i}")
+    
+			syn_data   = np.array([s for label in range(data_pkg.n_labels) for s in syn_per_class[label]])
+			syn_labels = np.array([label for label in range(data_pkg.n_labels) for _ in syn_per_class[label]])
 
-		# add this after the vote_rounds loop, before np.savez
-		syn_data   = np.array([s for label in range(data_pkg.n_labels) for s in syn_per_class[label]])
-		syn_labels = np.array([label for label in range(data_pkg.n_labels) for _ in syn_per_class[label]])
 		np.savez(ar.log_dir + data_id, data=syn_data, labels=syn_labels)
 
 		data_tuple = datasets_colletion_def(syn_data, syn_labels,
