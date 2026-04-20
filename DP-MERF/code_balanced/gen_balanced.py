@@ -10,6 +10,10 @@ from data_loading import get_dataloaders
 from rff_mmd_approx import get_rff_losses
 from synth_data_benchmark import test_gen_data, test_passed_gen_data, datasets_colletion_def
 from synth_data_2d import plot_data
+import matplotlib.pyplot as plt
+import matplotlib.gridspec as gridspec
+import math
+import scipy
 
 import sys
 
@@ -132,14 +136,18 @@ def get_args():
 	parser.add_argument("--test-split", type=float, default=0.1, help="only relevant for synth_2d so far")
 
 	# ============== NEW ARGUMENTS ==============
-	parser.add_argument("--sample_generator_factor", type=float, default=0, help="proportion of synthetic data to generate, relative to number of synthetic samples to generate")  # FOR VOTING will sample from generator. 0 means only sample the initial time
+	parser.add_argument("--sample_generator_factor", type=float, default=0.5, help="proportion of synthetic data to generate, relative to number of synthetic samples to generate")  # FOR VOTING will sample from generator. 0 means only sample the initial time
 	parser.add_argument("--random_sample_factor", type=float, default=0, help="proportion of random data to sample, relative to number of synthetic samples to generate")  # 0 means no random sampling
-	parser.add_argument("--noise_multiplier_vote", type=float, default=1.0)
+	# parser.add_argument("--noise_multiplier_vote", type=float, default=1.0)
+	parser.add_argument("--epsilon_vote", type=float, default=1.0)
 	parser.add_argument("--vote_rounds", type=int, default=1)
 	parser.add_argument("--skip_vote", action="store_true", default=False)
 	parser.add_argument("--num_synth_factor", type=float, default=1, help="proportion of synthetic data to generate, relative to original")
 	parser.add_argument("--initial_population_factor", type=float, default=1, help="for voting, proportion of synthetic data to start with, relative to number of synthetic samples to generate")
+	parser.add_argument("--model_path", type=str, default="pt_models/epsilon_1.0/gen.pt")
+
 	# parser.add_argument("--metadata_path", default=None, type=str, help="Path to metadata json file")
+	parser.add_argument("--n_splits", type=int, default=1, help="number of independent voting runs to union (approach 2)")
 
 	ar = parser.parse_args()
 
@@ -148,48 +156,138 @@ def get_args():
 	return ar
 
 
+def find_required_noise_multiplier(epsilon, num_steps, num_N):
+    delta= 1/(num_N*math.log(num_N))
+    def delta_Gaussian(eps, mu):
+        """Compute delta of Gaussian mechanism with shift mu or equivalently noise scale 1/mu"""
+        if mu==0:
+            return 0
+        return scipy.stats.norm.cdf(-eps / mu + mu / 2) - np.exp(eps) * scipy.stats.norm.cdf(-eps / mu - mu / 2)
+    def eps_Gaussian(delta, mu):
+        """Compute eps of Gaussian mechanism with shift mu or equivalently noise scale 1/mu"""
+        def f(x):
+            return delta_Gaussian(x, mu) - delta
+        return scipy.optimize.root_scalar(f, bracket=[0, 500], method='brentq').root
+    def compute_epsilon(noise_multiplier, num_steps, delta):
+        return eps_Gaussian(delta, np.sqrt(num_steps) / noise_multiplier)
+    def objective(x):
+        return -compute_epsilon(x[0], num_steps, delta)
+    def constraints(x):
+        return (epsilon - .00001) - compute_epsilon(x[0], num_steps, delta)
+
+    output = scipy.optimize.minimize(lambda x: objective(x), x0=[1], bounds=[(0, None)], constraints={'type': 'ineq', 'fun': constraints})
+    assert(output.success)
+    assert(-output.fun < epsilon)
+    return output.x[0]
+
 def preprocess_args(ar):
-    ar.base_log_dir = os.path.abspath(ar.base_log_dir) + "/"
-    
-    if ar.log_dir is None:
-        if ar.log_name is None:
-            ar.log_name = (
-                f"dpmerf_{ar.data}"
-                f"_ep{ar.epochs}"
-                f"_noise{ar.noise_factor}"
+	ar.base_log_dir = os.path.abspath(ar.base_log_dir) + "/"
+
+	if ar.log_dir is None:
+		if ar.log_name is None:
+			ar.log_name = (
+				f"dpmerf_{ar.data}"
+				f"_ep{ar.epochs}"
+				f"_noise{ar.noise_factor}"
+			)
+		base = ar.base_log_dir + ar.log_name + "/"
+		if ar.skip_vote:
+			ar.log_dir = base + "no_vote/"
+		else:
+			ar.log_dir = os.path.join(
+				base,
+				f"noise_multiplier_{ar.epsilon_vote}",
+				f"syn_factor_{ar.num_synth_factor}",
+				f"initial_pop_{ar.initial_population_factor}",
+				f"gen_factor_{ar.sample_generator_factor}",
+				f"rand_factor_{ar.random_sample_factor}",
+				f"n_splits_{ar.n_splits}"
+			) + "/"
+		ar.model_pt_path = base + "gen.pt"
+	else:
+		ar.model_pt_path = ar.log_dir + "gen.pt"
+
+	if ar.model_path is not None:
+		ar.model_pt_path = ar.model_path
+
+	os.makedirs(ar.log_dir, exist_ok=True)
+
+	if ar.seed is None:
+		ar.seed = np.random.randint(0, 1000)
+	assert ar.data in {"digits", "fashion", "2d"}
+	if ar.rff_sigma is None:
+		ar.rff_sigma = "105" if ar.data == "digits" else "127"
+
+	if ar.loss_type == "kmeans" and ar.tgt_epsilon > 0.0:
+		assert ar.center_data, "dp kmeans requires centering of data"
+
+	if ar.data == "2d":
+		ar.conv_gen = False
+	else:
+		ar.conv_gen = True
+
+def run_voting_pipeline(gen, device, ar, n_per_class, private_embeddings_per_class,
+                        columns, info, n_labels, gen_batch_size, noise_multiplier_vote, log_dir=None, split_idx=0):
+    """
+    Runs the full voting pipeline for one split.
+    Returns syn_per_class dict {label: [samples]} with n_per_class per label.
+    """    
+    syn_data_raw, syn_labels_raw = synthesize_data_with_uniform_labels(
+        gen, device,
+        gen_batch_size=gen_batch_size,
+        n_data=int(n_per_class * n_labels * ar.initial_population_factor),
+        n_labels=n_labels
+    )
+    syn_labels_raw = syn_labels_raw.flatten().astype(int)
+
+    syn_per_class = {
+        label: syn_data_raw[syn_labels_raw == label].tolist()
+        for label in range(n_labels)
+    }
+
+    for i in range(ar.vote_rounds):
+        for label in range(n_labels):
+            syn_class = syn_per_class[label]
+
+            if ar.random_sample_factor > 0:
+                n_random = int(n_per_class * ar.random_sample_factor)
+                random_samples = np.random.uniform(
+                    [info["x"]["min"], info["y"]["min"]],
+                    [info["x"]["max"], info["y"]["max"]],
+                    size=(n_random, 2)
+                ).tolist()
+                syn_class = syn_class + random_samples
+
+            if ar.sample_generator_factor > 0:
+                n_gen = int(n_per_class * ar.sample_generator_factor)
+                gen_samples = synthesize_data_for_label(
+                    gen, device, label, n_gen,
+                    gen_batch_size=gen_batch_size
+                )
+                syn_class = syn_class + gen_samples.tolist()
+
+            public_embeddings = get_embeddings(syn_class, columns, info)
+            best, _, _ = vote(
+                public=syn_class,
+                public_embeddings=public_embeddings,
+                private_embeddings=private_embeddings_per_class[label],
+                count=n_per_class,
+                noise_multiplier=noise_multiplier_vote
             )
-        base = ar.base_log_dir + ar.log_name + "/"
-        if ar.skip_vote:
-            ar.log_dir = base + "no_vote/"
-        else:
-            ar.log_dir = os.path.join(
-                base,
-                f"noise_multiplier_{ar.noise_multiplier_vote}",
-                f"syn_factor_{ar.num_synth_factor}",
-                f"initial_pop_{ar.initial_population_factor}",
-                f"gen_factor_{ar.sample_generator_factor}",
-                f"rand_factor_{ar.random_sample_factor}",
-            ) + "/"
-        ar.model_pt_path = base + "gen.pt"
-    else:
-        ar.model_pt_path = ar.log_dir + "gen.pt"
+            syn_per_class[label] = best
 
-    os.makedirs(ar.log_dir, exist_ok=True)
+        # plot if log_dir provided
+        if log_dir is not None:
+            syn_data_iter   = np.array([s for label in range(n_labels) for s in syn_per_class[label]])
+            syn_labels_iter = np.array([label for label in range(n_labels) for _ in syn_per_class[label]])
+            data_tuple_iter = datasets_colletion_def(
+                syn_data_iter, syn_labels_iter, None, None, None, None
+            )
+            iter_dir = os.path.join(log_dir, f"split_{split_idx}_iteration_{i}")
+            os.makedirs(iter_dir, exist_ok=True)
+            plot_curr(data_tuple_iter, iter_dir, f"split_{split_idx}_iteration_{i}")
 
-    if ar.seed is None:
-        ar.seed = np.random.randint(0, 1000)
-    assert ar.data in {"digits", "fashion", "2d"}
-    if ar.rff_sigma is None:
-        ar.rff_sigma = "105" if ar.data == "digits" else "127"
-
-    if ar.loss_type == "kmeans" and ar.tgt_epsilon > 0.0:
-        assert ar.center_data, "dp kmeans requires centering of data"
-
-    if ar.data == "2d":
-        ar.conv_gen = False
-    else:
-        ar.conv_gen = True
-
+    return syn_per_class
 
 def synthesize_data_with_uniform_labels(gen, device, gen_batch_size=1000, n_data=60000, n_labels=10):
 	gen.eval()
@@ -322,59 +420,32 @@ def main():
 				real_class = real_data[real_labels == label].tolist()
 				private_embeddings_per_class[label] = get_embeddings(real_class, columns, info)
 
-			syn_data_raw, syn_labels_raw = synthesize_data_with_uniform_labels(gen, device, gen_batch_size=ar.gen_batch_size, n_data=int(data_pkg.n_data * ar.initial_population_factor), n_labels=data_pkg.n_labels)
-			syn_labels_raw = syn_labels_raw.flatten().astype(int)
+			# n_per_class for each split is total / n_splits
+			n_per_class_split = n_per_class // ar.n_splits
 
-			syn_per_class = {
-				label: syn_data_raw[syn_labels_raw == label].tolist()
-				for label in range(data_pkg.n_labels)
-			}
-
-			for i in range(ar.vote_rounds):
-				for label in range(data_pkg.n_labels):
-					syn_class = syn_per_class[label]
-
-					if ar.random_sample_factor > 0:
-						n_random = int(n_per_class * ar.random_sample_factor)
-						random_samples = np.random.uniform(
-							[info["x"]["min"], info["y"]["min"]],
-							[info["x"]["max"], info["y"]["max"]],
-							size=(n_random, 2)
-						).tolist()
-						syn_class = syn_class + random_samples
-
-					if ar.sample_generator_factor > 0:
-						n_gen = int(n_per_class * ar.sample_generator_factor)
-						gen_samples = synthesize_data_for_label(
-							gen, device, label, n_gen,
-							gen_batch_size=ar.gen_batch_size
-						)
-						syn_class = syn_class + gen_samples.tolist()
-
-					public_embeddings = get_embeddings(syn_class, columns, info)
-					best, _, _ = vote(
-						public=syn_class,
-						public_embeddings=public_embeddings,
-						private_embeddings=private_embeddings_per_class[label],
-						count=n_per_class,
-						noise_multiplier=ar.noise_multiplier_vote
-					)
-					syn_per_class[label] = best
-				# PLOT CURRENT SYNTHETIC
-				syn_data_iter   = np.array([s for label in range(data_pkg.n_labels) for s in syn_per_class[label]])
-				syn_labels_iter = np.array([label for label in range(data_pkg.n_labels) for _ in syn_per_class[label]])
-
-				data_tuple_iter = datasets_colletion_def(
-					syn_data_iter, syn_labels_iter,
-					data_pkg.train_data.data, data_pkg.train_data.targets,
-					data_pkg.test_data.data, data_pkg.test_data.targets
+			all_syn_per_class = {label: [] for label in range(data_pkg.n_labels)}
+			voting_noise = find_required_noise_multiplier(ar.epsilon_vote, num_steps = ar.vote_rounds * ar.n_splits, num_N = data_pkg.n_data)
+			print(f"VOTING NOISE: {voting_noise}")
+			for split_idx in range(ar.n_splits):
+				print(f"  [Split {split_idx + 1}/{ar.n_splits}]")
+				split_result = run_voting_pipeline(
+					gen, device, ar,
+					n_per_class=n_per_class_split,
+					private_embeddings_per_class=private_embeddings_per_class,
+					columns=columns,
+					info=info,
+					n_labels=data_pkg.n_labels,
+					gen_batch_size=ar.gen_batch_size,
+					noise_multiplier_vote=voting_noise,
+					log_dir=ar.log_dir,
+					split_idx=split_idx
 				)
-				iter_dir = os.path.join(ar.log_dir, f"iteration_{i}")
-				os.makedirs(iter_dir, exist_ok=True)
-				plot_curr(data_tuple_iter, iter_dir, f"iteration_{i}")
-    
-			syn_data   = np.array([s for label in range(data_pkg.n_labels) for s in syn_per_class[label]])
-			syn_labels = np.array([label for label in range(data_pkg.n_labels) for _ in syn_per_class[label]])
+				for label in range(data_pkg.n_labels):
+					all_syn_per_class[label].extend(split_result[label])
+
+			syn_data   = np.array([s for label in range(data_pkg.n_labels) for s in all_syn_per_class[label]])
+			syn_labels = np.array([label for label in range(data_pkg.n_labels) for _ in all_syn_per_class[label]])
+
 
 		np.savez(ar.log_dir + data_id, data=syn_data, labels=syn_labels)
 
