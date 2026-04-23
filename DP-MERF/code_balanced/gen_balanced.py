@@ -135,19 +135,34 @@ def get_args():
 	parser.add_argument("--synth-spec-string", type=str, default="disc_k5_n10000_row5_col5_noise0.2", help="")
 	parser.add_argument("--test-split", type=float, default=0.1, help="only relevant for synth_2d so far")
 
-	# ============== NEW ARGUMENTS ==============
-	parser.add_argument("--sample_generator_factor", type=float, default=0.5, help="proportion of synthetic data to generate, relative to number of synthetic samples to generate")  # FOR VOTING will sample from generator. 0 means only sample the initial time
-	parser.add_argument("--random_sample_factor", type=float, default=0, help="proportion of random data to sample, relative to number of synthetic samples to generate")  # 0 means no random sampling
-	# parser.add_argument("--noise_multiplier_vote", type=float, default=1.0)
-	parser.add_argument("--epsilon_vote", type=float, default=1.0)
-	parser.add_argument("--vote_rounds", type=int, default=1)
+	# ============== VOTING ARGUMENTS ==============
 	parser.add_argument("--skip_vote", action="store_true", default=False)
+	parser.add_argument("--vote_rounds", type=int, default=1)
+	parser.add_argument("--n_splits", type=int, default=1, help="number of independent voting runs to union")
 	parser.add_argument("--num_synth_factor", type=float, default=1, help="proportion of synthetic data to generate, relative to original")
-	parser.add_argument("--initial_population_factor", type=float, default=1, help="for voting, proportion of synthetic data to start with, relative to number of synthetic samples to generate")
+	parser.add_argument("--epsilon_vote", type=float, default=1.0)
 	parser.add_argument("--model_path", type=str, default="pt_models/epsilon_1.0/gen.pt")
 
-	# parser.add_argument("--metadata_path", default=None, type=str, help="Path to metadata json file")
-	parser.add_argument("--n_splits", type=int, default=1, help="number of independent voting runs to union (approach 2)")
+	# Pool composition: generator_fraction + random_fraction must equal 1.0
+	# These control what proportion of each batch of candidates comes from
+	# the DP-MERF generator vs uniform random sampling.
+	parser.add_argument("--generator_fraction", type=float, default=1.0,
+						help="fraction of candidate pool from DP-MERF generator. "
+							 "Must sum to 1 with random_fraction.")
+	parser.add_argument("--random_fraction", type=float, default=0.0,
+						help="fraction of candidate pool from uniform random sampling. "
+							 "Must sum to 1 with generator_fraction.")
+
+	# oversample_factor: how many candidates to generate relative to how many
+	# we need to keep for this split.
+	# e.g. n_per_class_split=100, oversample_factor=1.25 -> generate 125 candidates,
+	# vote down to 100. Must be >= 1.0.
+	# Recommended: oversample_factor <= n_splits, so that candidates per split
+	# do not exceed the number of private points per class.
+	parser.add_argument("--oversample_factor", type=float, default=1.25,
+						help="ratio of candidates generated to samples needed per split. "
+							 "Must be >= 1.0. Higher = more filtering but worse voting quality "
+							 "if candidates exceed private points per class.")
 
 	ar = parser.parse_args()
 
@@ -177,11 +192,18 @@ def find_required_noise_multiplier(epsilon, num_steps, num_N):
 
     output = scipy.optimize.minimize(lambda x: objective(x), x0=[1], bounds=[(0, None)], constraints={'type': 'ineq', 'fun': constraints})
     assert(output.success)
-    assert(-output.fun < epsilon)
+    assert(-output.fun <= epsilon + 1e-4)
     return output.x[0]
+
 
 def preprocess_args(ar):
 	ar.base_log_dir = os.path.abspath(ar.base_log_dir) + "/"
+
+	# validate pool composition fractions
+	assert abs(ar.generator_fraction + ar.random_fraction - 1.0) < 1e-6, \
+		f"generator_fraction ({ar.generator_fraction}) + random_fraction ({ar.random_fraction}) must equal 1.0"
+	assert ar.oversample_factor >= 1.0, \
+		f"oversample_factor must be >= 1.0, got {ar.oversample_factor}"
 
 	if ar.log_dir is None:
 		if ar.log_name is None:
@@ -196,12 +218,12 @@ def preprocess_args(ar):
 		else:
 			ar.log_dir = os.path.join(
 				base,
-				f"noise_multiplier_{ar.epsilon_vote}",
-				f"syn_factor_{ar.num_synth_factor}",
-				f"initial_pop_{ar.initial_population_factor}",
-				f"gen_factor_{ar.sample_generator_factor}",
-				f"rand_factor_{ar.random_sample_factor}",
-				f"n_splits_{ar.n_splits}"
+				f"eps_{ar.epsilon_vote}",
+				f"syn_{ar.num_synth_factor}",
+				f"splits_{ar.n_splits}",
+				f"rounds_{ar.vote_rounds}",
+				f"over_{ar.oversample_factor}",
+				f"genfrac_{ar.generator_fraction}",
 			) + "/"
 		ar.model_pt_path = base + "gen.pt"
 	else:
@@ -226,68 +248,72 @@ def preprocess_args(ar):
 	else:
 		ar.conv_gen = True
 
+
 def run_voting_pipeline(gen, device, ar, n_per_class, private_embeddings_per_class,
-                        columns, info, n_labels, gen_batch_size, noise_multiplier_vote, log_dir=None, split_idx=0):
-    """
-    Runs the full voting pipeline for one split.
-    Returns syn_per_class dict {label: [samples]} with n_per_class per label.
-    """    
-    syn_data_raw, syn_labels_raw = synthesize_data_with_uniform_labels(
-        gen, device,
-        gen_batch_size=gen_batch_size,
-        n_data=int(n_per_class * n_labels * ar.initial_population_factor),
-        n_labels=n_labels
-    )
-    syn_labels_raw = syn_labels_raw.flatten().astype(int)
+						columns, info, n_labels, gen_batch_size, noise_multiplier_vote,
+						log_dir=None, split_idx=0):
+	"""
+	Runs the full voting pipeline for one split.
+	Returns syn_per_class dict {label: [samples]} with n_per_class per label.
 
-    syn_per_class = {
-        label: syn_data_raw[syn_labels_raw == label].tolist()
-        for label in range(n_labels)
-    }
+	Each vote round:
+	  1. Generate n_candidates = n_per_class * oversample_factor candidates per class.
+	     Mix of generator and random per generator_fraction / random_fraction.
+	     From round 2 onwards, survivors from the previous round are added too.
+	  2. Vote: private points vote for nearest candidate, keep top n_per_class.
+	"""
+	n_candidates  = int(n_per_class * ar.oversample_factor)
+	n_from_gen    = int(n_candidates * ar.generator_fraction)
+	n_from_rand   = n_candidates - n_from_gen  # ensures exact total
 
-    for i in range(ar.vote_rounds):
-        for label in range(n_labels):
-            syn_class = syn_per_class[label]
+	# start with empty pool — first round generates everything fresh
+	syn_per_class = {label: [] for label in range(n_labels)}
 
-            if ar.random_sample_factor > 0:
-                n_random = int(n_per_class * ar.random_sample_factor)
-                random_samples = np.random.uniform(
-                    [info["x"]["min"], info["y"]["min"]],
-                    [info["x"]["max"], info["y"]["max"]],
-                    size=(n_random, 2)
-                ).tolist()
-                syn_class = syn_class + random_samples
+	for i in range(ar.vote_rounds):
+		for label in range(n_labels):
+			candidates = []
 
-            if ar.sample_generator_factor > 0:
-                n_gen = int(n_per_class * ar.sample_generator_factor)
-                gen_samples = synthesize_data_for_label(
-                    gen, device, label, n_gen,
-                    gen_batch_size=gen_batch_size
-                )
-                syn_class = syn_class + gen_samples.tolist()
+			if n_from_gen > 0:
+				gen_samples = synthesize_data_for_label(
+					gen, device, label, n_from_gen, gen_batch_size=gen_batch_size
+				)
+				candidates.extend(gen_samples.tolist())
 
-            public_embeddings = get_embeddings(syn_class, columns, info)
-            best, _, _ = vote(
-                public=syn_class,
-                public_embeddings=public_embeddings,
-                private_embeddings=private_embeddings_per_class[label],
-                count=n_per_class,
-                noise_multiplier=noise_multiplier_vote
-            )
-            syn_per_class[label] = best
+			if n_from_rand > 0:
+				rand_samples = np.random.uniform(
+					[info["x"]["min"], info["y"]["min"]],
+					[info["x"]["max"], info["y"]["max"]],
+					size=(n_from_rand, 2)
+				).tolist()
+				candidates.extend(rand_samples)
 
-        # plot if log_dir provided
-        if log_dir is not None:
-            syn_data_iter   = np.array([s for label in range(n_labels) for s in syn_per_class[label]])
-            syn_labels_iter = np.array([label for label in range(n_labels) for _ in syn_per_class[label]])
-            data_tuple_iter = datasets_colletion_def(
-                syn_data_iter, syn_labels_iter, None, None, None, None
-            )
-            iter_dir = os.path.join(log_dir, f"split_{split_idx}_iteration_{i}")
-            os.makedirs(iter_dir, exist_ok=True)
-            plot_curr(data_tuple_iter, iter_dir, f"split_{split_idx}_iteration_{i}")
+			# from round 2 onwards, survivors from previous round join the pool
+			if i > 0:
+				candidates.extend(syn_per_class[label])
 
-    return syn_per_class
+			public_embeddings = get_embeddings(candidates, columns, info)
+			best, _, _ = vote(
+				public=candidates,
+				public_embeddings=public_embeddings,
+				private_embeddings=private_embeddings_per_class[label],
+				count=n_per_class,
+				noise_multiplier=noise_multiplier_vote
+			)
+			syn_per_class[label] = best
+
+		# plot intermediate results if log_dir provided
+		if log_dir is not None:
+			syn_data_iter   = np.array([s for label in range(n_labels) for s in syn_per_class[label]])
+			syn_labels_iter = np.array([label for label in range(n_labels) for _ in syn_per_class[label]])
+			data_tuple_iter = datasets_colletion_def(
+				syn_data_iter, syn_labels_iter, None, None, None, None
+			)
+			iter_dir = os.path.join(log_dir, f"split_{split_idx}_iteration_{i}")
+			os.makedirs(iter_dir, exist_ok=True)
+			plot_curr(data_tuple_iter, iter_dir, f"split_{split_idx}_iteration_{i}")
+
+	return syn_per_class
+
 
 def synthesize_data_with_uniform_labels(gen, device, gen_batch_size=1000, n_data=60000, n_labels=10):
 	gen.eval()
@@ -308,22 +334,21 @@ def synthesize_data_with_uniform_labels(gen, device, gen_batch_size=1000, n_data
 			data_list.append(gen_samples)
 	return pt.cat(data_list, dim=0).cpu().numpy(), pt.cat(labels_list, dim=0).cpu().numpy()
 
-def synthesize_data_for_label(gen, device, label, n_samples, gen_batch_size=1000):
-    gen.eval()
-    data_list = []
-    label_tensor = pt.full((gen_batch_size, 1), label, dtype=pt.long).to(device)
-    
-    remaining = n_samples
-    with pt.no_grad():
-        while remaining > 0:
-            batch = min(gen_batch_size, remaining)
-            label_tensor = pt.full((batch, 1), label, dtype=pt.long).to(device)
-            gen_code, gen_labels = gen.get_code(batch, device, labels=label_tensor)
-            gen_samples = gen(gen_code)
-            data_list.append(gen_samples)
-            remaining -= batch
 
-    return pt.cat(data_list, dim=0).cpu().numpy()
+def synthesize_data_for_label(gen, device, label, n_samples, gen_batch_size=1000):
+	gen.eval()
+	data_list = []
+	remaining = n_samples
+	with pt.no_grad():
+		while remaining > 0:
+			batch = min(gen_batch_size, remaining)
+			label_tensor = pt.full((batch, 1), label, dtype=pt.long).to(device)
+			gen_code, gen_labels = gen.get_code(batch, device, labels=label_tensor)
+			gen_samples = gen(gen_code)
+			data_list.append(gen_samples)
+			remaining -= batch
+	return pt.cat(data_list, dim=0).cpu().numpy()
+
 
 def test_results(data_key, log_name, log_dir, data_tuple, eval_func):
 	if data_key in {"digits", "fashion"}:
@@ -341,11 +366,12 @@ def test_results(data_key, log_name, log_dir, data_tuple, eval_func):
 		plot_data(data_tuple.x_gen, data_tuple.y_gen.flatten(), os.path.join(log_dir, "plot_gen"))
 		plot_data(data_tuple.x_gen, data_tuple.y_gen.flatten(), os.path.join(log_dir, "plot_gen_sub0.2"), subsample=0.2)
 		plot_data(data_tuple.x_gen, data_tuple.y_gen.flatten(), os.path.join(log_dir, "plot_gen_centered"), center_frame=True)
-  
+
+
 def plot_curr(data_tuple, log_dir, title):
 	# plot_data(data_tuple.x_gen, data_tuple.y_gen.flatten(), os.path.join(log_dir, "plot_gen"))
-	plot_data(data_tuple.x_gen, data_tuple.y_gen.flatten(), os.path.join(log_dir, "plot_gen_sub0.2"), subsample=0.2, title = title)
-	plot_data(data_tuple.x_gen, data_tuple.y_gen.flatten(), os.path.join(log_dir, "plot_gen_centered"), center_frame=True, title = title)
+	plot_data(data_tuple.x_gen, data_tuple.y_gen.flatten(), os.path.join(log_dir, "plot_gen_sub0.2"), subsample=0.2, title=title)
+	plot_data(data_tuple.x_gen, data_tuple.y_gen.flatten(), os.path.join(log_dir, "plot_gen_centered"), center_frame=True, title=title)
 
 
 def main():
@@ -389,20 +415,35 @@ def main():
 			scheduler.step()
 
 		# save trained model and data
-		pt.save(gen.state_dict(), ar.model_pt_path) 
-  
+		pt.save(gen.state_dict(), ar.model_pt_path)
+
 	if ar.create_dataset:
 		data_id = "synthetic_mnist" if ar.data in {"digits", "fashion"} else "gen_data"
 
-		# if ar.dataset in {'digits', 'fashion'}:
 		if ar.skip_vote:
 			print("DP-MERF Default mode, no voting")
 			syn_data, syn_labels = synthesize_data_with_uniform_labels(gen, device, gen_batch_size=ar.gen_batch_size, n_data=data_pkg.n_data, n_labels=data_pkg.n_labels)
 		else:
 			print("DP-MERF with DP-Histogram voting")
 			num_samples_to_generate = int(data_pkg.n_data * ar.num_synth_factor)
-			assert (ar.initial_population_factor + ar.sample_generator_factor + ar.random_sample_factor) > 1, "Not enough initial synthetic data to start voting. Please increase initial_population_factor or decrease synth_factor, sample_generator_factor or random_sample_factor."
- 
+			n_per_class       = int(num_samples_to_generate / data_pkg.n_labels)
+			n_per_class_split = n_per_class // ar.n_splits
+
+			# warn if voting quality may be poor
+			n_private_per_class    = data_pkg.n_data // data_pkg.n_labels
+			n_candidates_per_split = int(n_per_class_split * ar.oversample_factor)
+			if n_candidates_per_split > n_private_per_class:
+				print(f"WARNING: candidates per split ({n_candidates_per_split}) exceeds "
+					  f"private points per class ({n_private_per_class}). "
+					  f"Consider reducing oversample_factor or increasing n_splits.")
+
+			print(f"  n_per_class:        {n_per_class}")
+			print(f"  n_splits:           {ar.n_splits}")
+			print(f"  n_per_class_split:  {n_per_class_split}")
+			print(f"  oversample_factor:  {ar.oversample_factor}")
+			print(f"  candidates/split:   {n_candidates_per_split}")
+			print(f"  private/class:      {n_private_per_class}")
+
 			columns = {"numerical": ["x", "y"], "categorical": [], "label": "label"}
 
 			real_data = data_pkg.train_data.data
@@ -412,20 +453,22 @@ def main():
 				real_labels = real_labels.cpu().numpy().flatten().astype(int)
 
 			info = get_info_gaussian(real_data, columns["numerical"])
-			n_per_class = int(num_samples_to_generate / data_pkg.n_labels)
-			
+
 			private_embeddings_per_class = {}
-			
 			for label in range(data_pkg.n_labels):
 				real_class = real_data[real_labels == label].tolist()
 				private_embeddings_per_class[label] = get_embeddings(real_class, columns, info)
 
-			# n_per_class for each split is total / n_splits
-			n_per_class_split = n_per_class // ar.n_splits
+			# num_steps = vote_rounds * n_splits: total times private data is accessed.
+			# splits are sequential (same private data), classes are parallel (disjoint subsets = free).
+			voting_noise = find_required_noise_multiplier(
+				ar.epsilon_vote,
+				num_steps=ar.vote_rounds * ar.n_splits,
+				num_N=data_pkg.n_data
+			)
+			print(f"VOTING NOISE: {voting_noise}")
 
 			all_syn_per_class = {label: [] for label in range(data_pkg.n_labels)}
-			voting_noise = find_required_noise_multiplier(ar.epsilon_vote, num_steps = ar.vote_rounds * ar.n_splits, num_N = data_pkg.n_data)
-			print(f"VOTING NOISE: {voting_noise}")
 			for split_idx in range(ar.n_splits):
 				print(f"  [Split {split_idx + 1}/{ar.n_splits}]")
 				split_result = run_voting_pipeline(
@@ -445,7 +488,6 @@ def main():
 
 			syn_data   = np.array([s for label in range(data_pkg.n_labels) for s in all_syn_per_class[label]])
 			syn_labels = np.array([label for label in range(data_pkg.n_labels) for _ in all_syn_per_class[label]])
-
 
 		np.savez(ar.log_dir + data_id, data=syn_data, labels=syn_labels)
 
