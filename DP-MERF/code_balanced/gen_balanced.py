@@ -12,13 +12,11 @@ from synth_data_benchmark import test_gen_data, test_passed_gen_data, datasets_c
 from synth_data_2d import plot_data
 import matplotlib.pyplot as plt
 import matplotlib.gridspec as gridspec
-import math
-import scipy
 
 import sys
 
 sys.path.append("..")
-from utils.histogram_voting import get_info_gaussian, vote, get_embeddings
+from utils.histogram_voting import *
 
 
 def train_single_release(gen, device, optimizer, epoch, rff_mmd_loss, log_interval, batch_size, n_data):
@@ -138,31 +136,16 @@ def get_args():
 	# ============== VOTING ARGUMENTS ==============
 	parser.add_argument("--skip_vote", action="store_true", default=False)
 	parser.add_argument("--vote_rounds", type=int, default=1)
-	parser.add_argument("--n_splits", type=int, default=1, help="number of independent voting runs to union")
+	parser.add_argument("--k_splits", type=int, default=1, help="number of independent voting runs to union")
 	parser.add_argument("--num_synth_factor", type=float, default=1, help="proportion of synthetic data to generate, relative to original")
 	parser.add_argument("--epsilon_vote", type=float, default=1.0)
 	parser.add_argument("--model_path", type=str, default="pt_models/epsilon_1.0/gen.pt")
-
-	# Pool composition: generator_fraction + random_fraction must equal 1.0
-	# These control what proportion of each batch of candidates comes from
-	# the DP-MERF generator vs uniform random sampling.
 	parser.add_argument("--generator_fraction", type=float, default=1.0,
 						help="fraction of candidate pool from DP-MERF generator. "
-							 "Must sum to 1 with random_fraction.")
-	parser.add_argument("--random_fraction", type=float, default=0.0,
-						help="fraction of candidate pool from uniform random sampling. "
-							 "Must sum to 1 with generator_fraction.")
-
-	# oversample_factor: how many candidates to generate relative to how many
-	# we need to keep for this split.
-	# e.g. n_per_class_split=100, oversample_factor=1.25 -> generate 125 candidates,
-	# vote down to 100. Must be >= 1.0.
-	# Recommended: oversample_factor <= n_splits, so that candidates per split
-	# do not exceed the number of private points per class.
-	parser.add_argument("--oversample_factor", type=float, default=1.25,
-						help="ratio of candidates generated to samples needed per split. "
-							 "Must be >= 1.0. Higher = more filtering but worse voting quality "
-							 "if candidates exceed private points per class.")
+							 "Remainder (1 - generator_fraction) comes from random sampling.")
+	parser.add_argument("--oversample_factor", type=float, default=0.5,
+						help="how many extra candidates to generate relative to n_per_split. "
+							 "e.g. 0.5 means generate 50%% more than needed, then vote down.")
 
 	ar = parser.parse_args()
 
@@ -171,39 +154,13 @@ def get_args():
 	return ar
 
 
-def find_required_noise_multiplier(epsilon, num_steps, num_N):
-    delta= 1/(num_N*math.log(num_N))
-    def delta_Gaussian(eps, mu):
-        """Compute delta of Gaussian mechanism with shift mu or equivalently noise scale 1/mu"""
-        if mu==0:
-            return 0
-        return scipy.stats.norm.cdf(-eps / mu + mu / 2) - np.exp(eps) * scipy.stats.norm.cdf(-eps / mu - mu / 2)
-    def eps_Gaussian(delta, mu):
-        """Compute eps of Gaussian mechanism with shift mu or equivalently noise scale 1/mu"""
-        def f(x):
-            return delta_Gaussian(x, mu) - delta
-        return scipy.optimize.root_scalar(f, bracket=[0, 500], method='brentq').root
-    def compute_epsilon(noise_multiplier, num_steps, delta):
-        return eps_Gaussian(delta, np.sqrt(num_steps) / noise_multiplier)
-    def objective(x):
-        return -compute_epsilon(x[0], num_steps, delta)
-    def constraints(x):
-        return (epsilon - .00001) - compute_epsilon(x[0], num_steps, delta)
-
-    output = scipy.optimize.minimize(lambda x: objective(x), x0=[1], bounds=[(0, None)], constraints={'type': 'ineq', 'fun': constraints})
-    assert(output.success)
-    assert(-output.fun <= epsilon + 1e-4)
-    return output.x[0]
-
-
 def preprocess_args(ar):
 	ar.base_log_dir = os.path.abspath(ar.base_log_dir) + "/"
 
-	# validate pool composition fractions
-	assert abs(ar.generator_fraction + ar.random_fraction - 1.0) < 1e-6, \
-		f"generator_fraction ({ar.generator_fraction}) + random_fraction ({ar.random_fraction}) must equal 1.0"
-	assert ar.oversample_factor >= 1.0, \
-		f"oversample_factor must be >= 1.0, got {ar.oversample_factor}"
+	assert 0.0 <= ar.generator_fraction <= 1.0, \
+		f"generator_fraction must be in [0, 1], got {ar.generator_fraction}"
+	assert ar.oversample_factor >= 0.0, \
+		f"oversample_factor must be >= 0, got {ar.oversample_factor}"
 
 	if ar.log_dir is None:
 		if ar.log_name is None:
@@ -220,7 +177,7 @@ def preprocess_args(ar):
 				base,
 				f"eps_{ar.epsilon_vote}",
 				f"syn_{ar.num_synth_factor}",
-				f"splits_{ar.n_splits}",
+				f"splits_{ar.k_splits}",
 				f"rounds_{ar.vote_rounds}",
 				f"over_{ar.oversample_factor}",
 				f"genfrac_{ar.generator_fraction}",
@@ -247,72 +204,6 @@ def preprocess_args(ar):
 		ar.conv_gen = False
 	else:
 		ar.conv_gen = True
-
-
-def run_voting_pipeline(gen, device, ar, n_per_class, private_embeddings_per_class,
-						columns, info, n_labels, gen_batch_size, noise_multiplier_vote,
-						log_dir=None, split_idx=0):
-	"""
-	Runs the full voting pipeline for one split.
-	Returns syn_per_class dict {label: [samples]} with n_per_class per label.
-
-	Each vote round:
-	  1. Generate n_candidates = n_per_class * oversample_factor candidates per class.
-	     Mix of generator and random per generator_fraction / random_fraction.
-	     From round 2 onwards, survivors from the previous round are added too.
-	  2. Vote: private points vote for nearest candidate, keep top n_per_class.
-	"""
-	n_candidates  = int(n_per_class * ar.oversample_factor)
-	n_from_gen    = int(n_candidates * ar.generator_fraction)
-	n_from_rand   = n_candidates - n_from_gen  # ensures exact total
-
-	# start with empty pool — first round generates everything fresh
-	syn_per_class = {label: [] for label in range(n_labels)}
-
-	for i in range(ar.vote_rounds):
-		for label in range(n_labels):
-			candidates = []
-
-			if n_from_gen > 0:
-				gen_samples = synthesize_data_for_label(
-					gen, device, label, n_from_gen, gen_batch_size=gen_batch_size
-				)
-				candidates.extend(gen_samples.tolist())
-
-			if n_from_rand > 0:
-				rand_samples = np.random.uniform(
-					[info["x"]["min"], info["y"]["min"]],
-					[info["x"]["max"], info["y"]["max"]],
-					size=(n_from_rand, 2)
-				).tolist()
-				candidates.extend(rand_samples)
-
-			# from round 2 onwards, survivors from previous round join the pool
-			if i > 0:
-				candidates.extend(syn_per_class[label])
-
-			public_embeddings = get_embeddings(candidates, columns, info)
-			best, _, _ = vote(
-				public=candidates,
-				public_embeddings=public_embeddings,
-				private_embeddings=private_embeddings_per_class[label],
-				count=n_per_class,
-				noise_multiplier=noise_multiplier_vote
-			)
-			syn_per_class[label] = best
-
-		# plot intermediate results if log_dir provided
-		if log_dir is not None:
-			syn_data_iter   = np.array([s for label in range(n_labels) for s in syn_per_class[label]])
-			syn_labels_iter = np.array([label for label in range(n_labels) for _ in syn_per_class[label]])
-			data_tuple_iter = datasets_colletion_def(
-				syn_data_iter, syn_labels_iter, None, None, None, None
-			)
-			iter_dir = os.path.join(log_dir, f"split_{split_idx}_iteration_{i}")
-			os.makedirs(iter_dir, exist_ok=True)
-			plot_curr(data_tuple_iter, iter_dir, f"split_{split_idx}_iteration_{i}")
-
-	return syn_per_class
 
 
 def synthesize_data_with_uniform_labels(gen, device, gen_batch_size=1000, n_data=60000, n_labels=10):
@@ -425,69 +316,45 @@ def main():
 			syn_data, syn_labels = synthesize_data_with_uniform_labels(gen, device, gen_batch_size=ar.gen_batch_size, n_data=data_pkg.n_data, n_labels=data_pkg.n_labels)
 		else:
 			print("DP-MERF with DP-Histogram voting")
-			num_samples_to_generate = int(data_pkg.n_data * ar.num_synth_factor)
-			n_per_class       = int(num_samples_to_generate / data_pkg.n_labels)
-			n_per_class_split = n_per_class // ar.n_splits
 
-			# warn if voting quality may be poor
-			n_private_per_class    = data_pkg.n_data // data_pkg.n_labels
-			n_candidates_per_split = int(n_per_class_split * ar.oversample_factor)
-			if n_candidates_per_split > n_private_per_class:
-				print(f"WARNING: candidates per split ({n_candidates_per_split}) exceeds "
-					  f"private points per class ({n_private_per_class}). "
-					  f"Consider reducing oversample_factor or increasing n_splits.")
-
-			print(f"  n_per_class:        {n_per_class}")
-			print(f"  n_splits:           {ar.n_splits}")
-			print(f"  n_per_class_split:  {n_per_class_split}")
-			print(f"  oversample_factor:  {ar.oversample_factor}")
-			print(f"  candidates/split:   {n_candidates_per_split}")
-			print(f"  private/class:      {n_private_per_class}")
-
-			columns = {"numerical": ["x", "y"], "categorical": [], "label": "label"}
-
-			real_data = data_pkg.train_data.data
+			# get real data as numpy arrays for voting
+			real_data   = data_pkg.train_data.data
 			real_labels = data_pkg.train_data.targets
 			if isinstance(real_data, pt.Tensor):
-				real_data = real_data.cpu().numpy()
+				real_data   = real_data.cpu().numpy()
 				real_labels = real_labels.cpu().numpy().flatten().astype(int)
 
-			info = get_info_gaussian(real_data, columns["numerical"])
+			# for 2d data all columns are numerical, none are categorical
+			numerical_col_indices   = list(range(real_data.shape[1]))
+			categorical_col_indices = []
 
-			private_embeddings_per_class = {}
-			for label in range(data_pkg.n_labels):
-				real_class = real_data[real_labels == label].tolist()
-				private_embeddings_per_class[label] = get_embeddings(real_class, columns, info)
+			# define generator_fn and random_fn with matching (n, label) signatures
+			# columns and info are built inside run_voting_pipeline, so we need them
+			# here for random_fn — build them once upfront
+			columns, info = build_columns_info(real_data, numerical_col_indices, categorical_col_indices)
 
-			# num_steps = vote_rounds * n_splits: total times private data is accessed.
-			# splits are sequential (same private data), classes are parallel (disjoint subsets = free).
-			voting_noise = find_required_noise_multiplier(
-				ar.epsilon_vote,
-				num_steps=ar.vote_rounds * ar.n_splits,
-				num_N=data_pkg.n_data
+			def generator_fn(n, label):
+				samples = synthesize_data_for_label(gen, device, label, n, gen_batch_size=ar.gen_batch_size)
+				return samples.tolist()
+
+			def random_fn(n):
+				return generate_random(n, columns, info)
+
+			syn_data, syn_labels = run_voting_pipeline(
+				generator_fn=generator_fn,
+				random_fn=random_fn,
+				generator_fraction=ar.generator_fraction,
+				X_train=real_data,
+				y_train=real_labels,
+				n_classes=data_pkg.n_labels,
+				num_synth_factor=ar.num_synth_factor,
+				k_splits=ar.k_splits,
+				vote_rounds=ar.vote_rounds,
+				oversample_factor=ar.oversample_factor,
+				epsilon_vote=ar.epsilon_vote,
+				numerical_col_indices=numerical_col_indices,
+				categorical_col_indices=categorical_col_indices,
 			)
-			print(f"VOTING NOISE: {voting_noise}")
-
-			all_syn_per_class = {label: [] for label in range(data_pkg.n_labels)}
-			for split_idx in range(ar.n_splits):
-				print(f"  [Split {split_idx + 1}/{ar.n_splits}]")
-				split_result = run_voting_pipeline(
-					gen, device, ar,
-					n_per_class=n_per_class_split,
-					private_embeddings_per_class=private_embeddings_per_class,
-					columns=columns,
-					info=info,
-					n_labels=data_pkg.n_labels,
-					gen_batch_size=ar.gen_batch_size,
-					noise_multiplier_vote=voting_noise,
-					log_dir=ar.log_dir,
-					split_idx=split_idx
-				)
-				for label in range(data_pkg.n_labels):
-					all_syn_per_class[label].extend(split_result[label])
-
-			syn_data   = np.array([s for label in range(data_pkg.n_labels) for s in all_syn_per_class[label]])
-			syn_labels = np.array([label for label in range(data_pkg.n_labels) for _ in all_syn_per_class[label]])
 
 		np.savez(ar.log_dir + data_id, data=syn_data, labels=syn_labels)
 

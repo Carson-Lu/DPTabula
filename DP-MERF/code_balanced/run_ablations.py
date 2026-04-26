@@ -1,25 +1,31 @@
 #!/usr/bin/env python3
 """
-run_ablations_v2.py
-===================
-Ablation sweeps for the split-vote-union DP-MERF extension.
-Works with the updated gen_balanced.py args:
-    --n_splits, --vote_rounds, --oversample_factor,
-    --generator_fraction, --random_fraction, --epsilon_vote
+run_ablations.py
+================
+Ablation sweeps for the DP-MERF + voting extension.
 
-Four sweeps, run one at a time:
-    Sweep A: vote_rounds      — iterative refinement rounds per split
-    Sweep B: n_splits         — independent pipelines to union
-    Sweep C: oversample_factor — how many candidates relative to needed
-    Sweep D: generator_fraction — generator vs random in the pool
+Sweep order matters — run B first to find the best k_splits,
+then use that in all subsequent sweeps.
+
+Sweeps:
+    B: k_splits         — how many independent pipelines to union (run first)
+    A: vote_rounds      — iterative refinement rounds per split
+    C: oversample_factor — extra candidates relative to n_per_split
+    D: generator_fraction — generator vs random in the pool
+    E: num_synth_factor — size of synthetic dataset relative to N
+    F: k_splits x vote_rounds x num_synth_factor interaction
 
 Usage
 -----
-    python run_ablations_v2.py --sweep A
-    python run_ablations_v2.py --sweep B
-    python run_ablations_v2.py --sweep C
-    python run_ablations_v2.py --sweep D
-    python run_ablations_v2.py --sweep all
+    python run_ablations.py --sweep B1 # tests k_splits with voting round 1
+    python run_ablations.py --sweep B5 # tests k_splits with voting round 2
+    python run_ablations.py --sweep B10 # tests k_splits with voting round 10
+    python run_ablations.py --sweep A --best_k_splits 2
+    python run_ablations.py --sweep C --best_k_splits 2
+    python run_ablations.py --sweep D --best_k_splits 2
+    python run_ablations.py --sweep E --best_k_splits 2
+    python run_ablations.py --sweep F
+    python run_ablations.py --sweep all        # runs B,A,C,D,E,F in order
 """
 
 import argparse
@@ -55,75 +61,80 @@ FIXED = dict(
 #  Sweep definitions                                                  #
 # ------------------------------------------------------------------ #
 
-# Key constraint: candidates per split should not greatly exceed private
-# points per class. With num_synth_factor=1:
-#   candidates = n_per_class_split * oversample_factor
-#              = (n_per_class / n_splits) * oversample_factor
-#   private    = n_private_per_class ~ n_per_class
-# So: oversample_factor <= n_splits keeps candidates <= private points.
+# ---- Sweep B: k_splits — run this first ----
+# vote_rounds=1, oversample_factor=0.5, all generator.
+# Tests whether splitting into independent pipelines and unioning helps.
+# k_splits=1 is the no-split baseline.
+SWEEP_B1 = [
+    dict(vote_rounds=1, k_splits=ks, oversample_factor=0.5, generator_fraction=1.0)
+    for ks in [1, 5, 25, 50]
+]
+
+SWEEP_B5 = [
+    dict(vote_rounds=5, k_splits=ks, oversample_factor=0.5, generator_fraction=1.0)
+    for ks in [1, 5, 25, 50]
+]
+
+SWEEP_B10 = [
+    dict(vote_rounds=10, k_splits=ks, oversample_factor=0.5, generator_fraction=1.0)
+    for ks in [1, 5, 25, 50]
+]
 
 # ---- Sweep A: vote_rounds — iterative refinement per split ----
-# Fixed: n_splits=1, oversample_factor=1.25, all generator
+# Use best k_splits from B (default 2). k_splits=1 not re-tested.
 SWEEP_A = [
-    dict(vote_rounds=r, n_splits=1, oversample_factor=1.25, generator_fraction=1.0, random_fraction=0.0)
+    dict(vote_rounds=r, k_splits=2, oversample_factor=0.5, generator_fraction=1.0)
     for r in [1, 2, 3, 5]
 ]
 
-# ---- Sweep B: n_splits — independent pipelines to union ----
-# Fixed: vote_rounds=1, oversample_factor=1.25, all generator
-# As n_splits increases, candidates per split decrease relative to private points.
-SWEEP_B = [
-    dict(vote_rounds=1, n_splits=ns, oversample_factor=1.25, generator_fraction=1.0, random_fraction=0.0)
-    for ns in [1, 2, 4, 8]
-]
-
-# ---- Sweep C: oversample_factor — candidates relative to needed ----
-# Fixed: n_splits=2, vote_rounds=1, all generator.
-# With n_splits=2, oversample_factor<=2 keeps candidates<=private points.
+# ---- Sweep C: oversample_factor — extra candidates relative to n_per_split ----
+# Use best k_splits from B (default 2).
+# oversample_factor=0.0 means no extra candidates (pool = current winners only).
+# oversample_factor=1.0 means generate as many extra as we need to keep.
 SWEEP_C = [
-    dict(vote_rounds=1, n_splits=2, oversample_factor=of, generator_fraction=1.0, random_fraction=0.0)
-    for of in [1.0, 1.25, 1.5, 1.75, 2.0]
+    dict(vote_rounds=1, k_splits=2, oversample_factor=of, generator_fraction=1.0)
+    for of in [0.0, 0.25, 0.5, 0.75, 1.0]
 ]
 
 # ---- Sweep D: generator_fraction — generator vs random in the pool ----
-# Fixed: n_splits=2, vote_rounds=1, oversample_factor=1.25.
+# Use best k_splits from B (default 2).
 # generator_fraction=1.0 = all generator, =0.0 = all random (pure baseline).
 SWEEP_D = [
-    dict(vote_rounds=1, n_splits=2, oversample_factor=1.25, generator_fraction=gf, random_fraction=round(1.0-gf, 2))
+    dict(vote_rounds=1, k_splits=2, oversample_factor=0.5, generator_fraction=gf)
     for gf in [1.0, 0.75, 0.5, 0.25, 0.0]
 ]
 
 # ---- Sweep E: num_synth_factor — size of synthetic dataset relative to N ----
-# Fixed: n_splits=1, vote_rounds=1, oversample_factor=1.25, all generator.
-# Tests whether generating less data improves quality (better bins-to-data ratio)
-# or if generating more data is worth the quality tradeoff.
+# Use best k_splits from B (default 2).
+# Tests whether generating less data improves voting quality.
 SWEEP_E = [
-    dict(vote_rounds=1, n_splits=1, oversample_factor=1.25, generator_fraction=1.0,
-         random_fraction=0.0, num_synth_factor=nsf)
+    dict(vote_rounds=1, k_splits=2, oversample_factor=0.5,
+         generator_fraction=1.0, num_synth_factor=nsf)
     for nsf in [0.25, 0.5, 0.75, 1.0, 1.5, 2.0]
 ]
 
-# ---- Sweep F: vote_rounds x n_splits x num_synth_factor (generator only) ----
-# Tests the interaction between how many splits/rounds we use and how much
-# data we want to generate. All generator, no random.
-# The hypothesis: smaller num_synth_factor + more splits may outperform
-# larger num_synth_factor + fewer splits since the bins-to-data ratio stays healthy.
+# ---- Sweep F: k_splits x vote_rounds x num_synth_factor interaction ----
+# All generator. Tests the joint effect of splits, rounds, and dataset size.
+# k_splits=1 excluded since sweep B already showed it underperforms.
 SWEEP_F = [
-    dict(vote_rounds=vr, n_splits=ns, oversample_factor=1.25, generator_fraction=1.0,
-         random_fraction=0.0, num_synth_factor=nsf)
-    for vr, ns, nsf in [
-        (1, 1, 1.0),    # baseline: single pipeline, full dataset
-        (1, 2, 1.0),    # 2 splits, full dataset
-        (1, 4, 1.0),    # 4 splits, full dataset
-        (1, 1, 0.5),    # single pipeline, half dataset
-        (1, 2, 0.5),    # 2 splits, half dataset — each split generates N/4
-        (1, 4, 0.5),    # 4 splits, half dataset — each split generates N/8
-        (2, 2, 0.5),    # 2 splits + 2 rounds, half dataset
-        (2, 2, 1.0),    # 2 splits + 2 rounds, full dataset
+    dict(vote_rounds=vr, k_splits=ks, oversample_factor=0.5,
+         generator_fraction=1.0, num_synth_factor=nsf)
+    for vr, ks, nsf in [
+        (1, 2, 1.0),    # 2 splits, 1 round, full dataset — baseline
+        (1, 4, 1.0),    # 4 splits, 1 round, full dataset
+        (1, 2, 0.5),    # 2 splits, 1 round, half dataset
+        (1, 4, 0.5),    # 4 splits, 1 round, half dataset
+        (2, 2, 1.0),    # 2 splits, 2 rounds, full dataset
+        (2, 4, 1.0),    # 4 splits, 2 rounds, full dataset
+        (2, 2, 0.5),    # 2 splits, 2 rounds, half dataset
+        (2, 4, 0.5),    # 4 splits, 2 rounds, half dataset
     ]
 ]
 
-SWEEPS = {"A": SWEEP_A, "B": SWEEP_B, "C": SWEEP_C, "D": SWEEP_D, "E": SWEEP_E, "F": SWEEP_F}
+SWEEPS = {"B1": SWEEP_B1, "B5": SWEEP_B5, "B10": SWEEP_B10,
+          "A": SWEEP_A, "C": SWEEP_C,
+          "D": SWEEP_D, "E": SWEEP_E, "F": SWEEP_F}
+SWEEP_ORDER = ["B1", "B5", "B10", "A", "C", "D", "E", "F"]
 
 
 # ------------------------------------------------------------------ #
@@ -133,12 +144,11 @@ SWEEPS = {"A": SWEEP_A, "B": SWEEP_B, "C": SWEEP_C, "D": SWEEP_D, "E": SWEEP_E, 
 def config_label(cfg):
     """Short human-readable label for a config dict."""
     label = (
-        f"vr{cfg['vote_rounds']}"
-        f"_ns{cfg['n_splits']}"
+        f"ks{cfg['k_splits']}"
+        f"_vr{cfg['vote_rounds']}"
         f"_of{cfg['oversample_factor']}"
         f"_gf{cfg['generator_fraction']}"
     )
-    # only append num_synth_factor if it differs from the default (1.0)
     if cfg.get("num_synth_factor", 1.0) != 1.0:
         label += f"_nsf{cfg['num_synth_factor']}"
     return label
@@ -146,7 +156,7 @@ def config_label(cfg):
 
 def run_one(cfg, fixed, base_log_dir, gen_script="gen_balanced.py"):
     """Launch gen_balanced.py as a subprocess for one config."""
-    label = config_label(cfg)
+    label   = config_label(cfg)
     log_dir = os.path.join(base_log_dir, label) + "/"
 
     cmd = [
@@ -165,10 +175,9 @@ def run_one(cfg, fixed, base_log_dir, gen_script="gen_balanced.py"):
         "--num_synth_factor",   str(cfg.get("num_synth_factor", fixed["num_synth_factor"])),
         "--seed",               str(fixed["seed"]),
         "--vote_rounds",        str(cfg["vote_rounds"]),
-        "--n_splits",           str(cfg["n_splits"]),
+        "--k_splits",           str(cfg["k_splits"]),
         "--oversample_factor",  str(cfg["oversample_factor"]),
         "--generator_fraction", str(cfg["generator_fraction"]),
-        "--random_fraction",    str(cfg["random_fraction"]),
     ]
 
     print("\n" + "="*70)
@@ -208,7 +217,7 @@ def plot_sweep_bar(sweep_name, configs, scores, base_log_dir):
         return
 
     lbl, sc = zip(*valid)
-    fig, ax = plt.subplots(figsize=(max(6, len(lbl) * 1.2), 5))
+    fig, ax = plt.subplots(figsize=(max(6, len(lbl) * 1.5), 5))
     bars = ax.bar(range(len(lbl)), sc, color="steelblue", edgecolor="white")
     ax.set_xticks(range(len(lbl)))
     ax.set_xticklabels(lbl, rotation=45, ha="right", fontsize=8)
@@ -223,10 +232,11 @@ def plot_sweep_bar(sweep_name, configs, scores, base_log_dir):
     path = os.path.join(base_log_dir, f"sweep_{sweep_name}_bar.png")
     plt.savefig(path, dpi=150)
     plt.close()
-    print(f"[plot] Saved → {path}")
+    print(f"[plot] Saved -> {path}")
 
 
-def _build_grid(sweep_name, configs, log_dirs, base_log_dir, plot_filename, out_filename, title_suffix):
+def _build_grid(sweep_name, configs, log_dirs, base_log_dir,
+                plot_filename, out_filename, title_suffix):
     """Load one plot file per config and stitch into a comparison grid."""
     images, labels = [], []
     for cfg, d in zip(configs, log_dirs):
@@ -256,7 +266,7 @@ def _build_grid(sweep_name, configs, log_dirs, base_log_dir, plot_filename, out_
     out_path = os.path.join(base_log_dir, out_filename)
     plt.savefig(out_path, dpi=150, bbox_inches="tight")
     plt.close()
-    print(f"[plot] Saved → {out_path}")
+    print(f"[plot] Saved -> {out_path}")
 
 
 def plot_combined_grid(sweep_name, configs, log_dirs, base_log_dir):
@@ -275,16 +285,32 @@ def print_summary(sweep_name, configs, scores):
     """Print a ranked table to stdout."""
     rows = [(config_label(c), s) for c, s in zip(configs, scores) if s is not None]
     rows.sort(key=lambda x: x[1], reverse=True)
-    print(f"\n{'='*50}")
+    print(f"\n{'='*55}")
     print(f"Ablation {sweep_name} — ranking (best first)")
-    print(f"{'='*50}")
+    print(f"{'='*55}")
     print(f"{'Config':<50} {'Score':>8}")
     print("-" * 60)
     for lbl, sc in rows:
         print(f"{lbl:<50} {sc:>8.4f}")
     if rows:
-        print(f"\n✓ Best config: {rows[0][0]}  (score = {rows[0][1]:.4f})")
-    print("=" * 50)
+        print(f"\n Best config: {rows[0][0]}  (score = {rows[0][1]:.4f})")
+    print("=" * 55)
+
+
+def patch_sweeps(best_k_splits, best_vote_rounds, best_oversample, best_num_synth):
+    """Patch later sweeps with best results from earlier ones."""
+    if best_k_splits is not None:
+        for cfg in SWEEP_A + SWEEP_C + SWEEP_D + SWEEP_E:
+            cfg["k_splits"] = best_k_splits
+    if best_vote_rounds is not None:
+        for cfg in SWEEP_C + SWEEP_D + SWEEP_E:
+            cfg["vote_rounds"] = best_vote_rounds
+    if best_oversample is not None:
+        for cfg in SWEEP_D + SWEEP_E:
+            cfg["oversample_factor"] = best_oversample
+    if best_num_synth is not None:
+        for cfg in SWEEP_F:
+            cfg["num_synth_factor"] = best_num_synth
 
 
 # ------------------------------------------------------------------ #
@@ -293,34 +319,36 @@ def print_summary(sweep_name, configs, scores):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--sweep", default="all", choices=["all", "A", "B", "C", "D", "E", "F"])
+    ap.add_argument("--sweep", default="B",
+                    choices=["all"] + SWEEP_ORDER,
+                    help="Which sweep to run. Start with B to find best k_splits.")
     ap.add_argument("--base_log_dir", default="logs/ablations")
-    ap.add_argument("--gen_script", default="gen_balanced.py")
+    ap.add_argument("--gen_script",   default="gen_balanced.py")
 
-    # Allow overriding any FIXED setting from the command line
-    ap.add_argument("--model_path",         type=str,   default=None)
-    ap.add_argument("--synth_spec_string",  type=str,   default=None)
-    ap.add_argument("--gen_spec",           type=str,   default=None)
-    ap.add_argument("--rff_sigma",          type=str,   default=None)
-    ap.add_argument("--lr",                 type=str,   default=None)
-    ap.add_argument("--d_rff",              type=int,   default=None)
-    ap.add_argument("--epsilon_vote",       type=float, default=None)
-    ap.add_argument("--epochs",             type=int,   default=None)
-    ap.add_argument("--seed",               type=int,   default=None)
+    # CLI overrides for FIXED settings
+    ap.add_argument("--model_path",        type=str,   default=None)
+    ap.add_argument("--synth_spec_string", type=str,   default=None)
+    ap.add_argument("--gen_spec",          type=str,   default=None)
+    ap.add_argument("--rff_sigma",         type=str,   default=None)
+    ap.add_argument("--lr",                type=str,   default=None)
+    ap.add_argument("--d_rff",             type=int,   default=None)
+    ap.add_argument("--epsilon_vote",      type=float, default=None)
+    ap.add_argument("--epochs",            type=int,   default=None)
+    ap.add_argument("--seed",              type=int,   default=None)
 
-    # Patch later sweeps with best result from earlier sweeps
-    ap.add_argument("--best_vote_rounds",    type=int,   default=None,
-                    help="Patch sweeps B/C/D with best vote_rounds from sweep A")
-    ap.add_argument("--best_n_splits",       type=int,   default=None,
-                    help="Patch sweeps C/D with best n_splits from sweep B")
-    ap.add_argument("--best_oversample",     type=float, default=None,
-                    help="Patch sweep D with best oversample_factor from sweep C")
-    ap.add_argument("--best_num_synth",      type=float, default=None,
-                    help="Override num_synth_factor in sweep F with best value from sweep E")
+    # Best results from earlier sweeps — used to patch later sweep defaults
+    ap.add_argument("--best_k_splits",    type=int,   default=None,
+                    help="Best k_splits from sweep B. Patches A, C, D, E.")
+    ap.add_argument("--best_vote_rounds", type=int,   default=None,
+                    help="Best vote_rounds from sweep A. Patches C, D, E.")
+    ap.add_argument("--best_oversample",  type=float, default=None,
+                    help="Best oversample_factor from sweep C. Patches D, E.")
+    ap.add_argument("--best_num_synth",   type=float, default=None,
+                    help="Best num_synth_factor from sweep E. Patches F.")
 
     args = ap.parse_args()
 
-    # Build fixed dict, applying any CLI overrides
+    # Apply CLI overrides to FIXED
     fixed = dict(FIXED)
     for key in ["model_path", "synth_spec_string", "gen_spec", "rff_sigma",
                 "lr", "d_rff", "epsilon_vote", "epochs", "seed"]:
@@ -328,21 +356,11 @@ def main():
         if val is not None:
             fixed[key] = val
 
-    # Patch later sweeps with best results from earlier ones
-    if args.best_vote_rounds is not None:
-        for cfg in SWEEP_B + SWEEP_C + SWEEP_D:
-            cfg["vote_rounds"] = args.best_vote_rounds
-    if args.best_n_splits is not None:
-        for cfg in SWEEP_C + SWEEP_D:
-            cfg["n_splits"] = args.best_n_splits
-    if args.best_oversample is not None:
-        for cfg in SWEEP_D:
-            cfg["oversample_factor"] = args.best_oversample
-    if args.best_num_synth is not None:
-        for cfg in SWEEP_F:
-            cfg["num_synth_factor"] = args.best_num_synth
+    # Patch sweeps with best results from earlier sweeps
+    patch_sweeps(args.best_k_splits, args.best_vote_rounds,
+                 args.best_oversample, args.best_num_synth)
 
-    sweeps_to_run = ["A", "B", "C", "D", "E", "F"] if args.sweep == "all" else [args.sweep]
+    sweeps_to_run = SWEEP_ORDER if args.sweep == "all" else [args.sweep]
 
     for sweep_name in sweeps_to_run:
         configs   = SWEEPS[sweep_name]
@@ -356,7 +374,7 @@ def main():
             log_dirs.append(log_dir)
             score = read_eval_score(log_dir)
             scores.append(score)
-            print(f"  → score: {score}")
+            print(f"  -> score: {score}")
 
         print_summary(sweep_name, configs, scores)
         plot_sweep_bar(sweep_name, configs, scores, sweep_dir)
@@ -366,7 +384,7 @@ def main():
                    for c, s in zip(configs, scores)]
         with open(os.path.join(sweep_dir, "summary.json"), "w") as f:
             json.dump(summary, f, indent=2)
-        print(f"[sweep] Summary → {os.path.join(sweep_dir, 'summary.json')}")
+        print(f"[sweep] Summary -> {os.path.join(sweep_dir, 'summary.json')}")
 
 
 if __name__ == "__main__":
