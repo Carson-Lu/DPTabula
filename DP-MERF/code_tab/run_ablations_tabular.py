@@ -41,10 +41,16 @@ import matplotlib.pyplot as plt
 
 # Shared voting defaults — same across all datasets
 VOTING_DEFAULTS = dict(
-    epsilon_vote=1.0,
+    epsilon_vote=0.5,
+    epsilon_gen_vote=0.5,
     num_synth_factor=1.0,
     oversample_factor=0.5,
     generator_fraction=1.0,
+)
+
+FIXED = dict(
+    skip_vote_baseline=True,  # skip_vote for baseline
+    epsilon_gen_baseline=1.0  # full epsilon for baseline
 )
 
 # Dataset-specific fixed settings (epochs, batch, undersample, num_features)
@@ -101,39 +107,62 @@ BINARY_DATASETS     = {"adult", "census", "cervical", "credit", "epileptic", "is
 # ------------------------------------------------------------------ #
 
 # ---- Sweep B: k_splits — run this first ----
-SWEEP_B = [
-    dict(vote_rounds=1, k_splits=ks, oversample_factor=0.5, generator_fraction=1.0)
-    for ks in [1, 2, 4, 8]
+SWEEP_B1 = [
+    dict(vote_rounds=1, k_splits=ks, oversample_factor=0.25, generator_fraction=1.0)
+    for ks in [1, 5, 25, 50]
 ]
+
+SWEEP_B5 = [
+    dict(vote_rounds=5, k_splits=ks, oversample_factor=0.25, generator_fraction=1.0)
+    for ks in [1, 5, 25, 50]
+]
+
+SWEEP_B10 = [
+    dict(vote_rounds=10, k_splits=ks, oversample_factor=0.25, generator_fraction=1.0)
+    for ks in [1, 5, 25, 50]
+]
+
 
 # ---- Sweep A: vote_rounds ----
 # Use best k_splits from B (default 2)
 SWEEP_A = [
-    dict(vote_rounds=r, k_splits=2, oversample_factor=0.5, generator_fraction=1.0)
-    for r in [1, 2, 3, 5]
+    dict(vote_rounds=r, k_splits=25, oversample_factor=0.5, generator_fraction=1.0)
+    for r in [1, 5, 10, 20, 30]
 ]
 
 # ---- Sweep C: oversample_factor ----
 SWEEP_C = [
-    dict(vote_rounds=1, k_splits=2, oversample_factor=of, generator_fraction=1.0)
-    for of in [0.0, 0.25, 0.5, 0.75, 1.0]
+    dict(vote_rounds=5, k_splits=25, oversample_factor=of, generator_fraction=1.0)
+    for of in [0.25, 0.5, 0.75, 1.0]
 ]
 
 # ---- Sweep D: generator_fraction ----
 SWEEP_D = [
-    dict(vote_rounds=1, k_splits=2, oversample_factor=0.5, generator_fraction=gf)
+    dict(vote_rounds=5, k_splits=25, oversample_factor=0.25, generator_fraction=gf)
     for gf in [1.0, 0.75, 0.5, 0.25, 0.0]
 ]
 
 # ---- Sweep E: num_synth_factor ----
 SWEEP_E = [
-    dict(vote_rounds=1, k_splits=2, oversample_factor=0.5,
+    dict(vote_rounds=5, k_splits=25, oversample_factor=0.25,
          generator_fraction=1.0, num_synth_factor=nsf)
     for nsf in [0.25, 0.5, 0.75, 1.0]
 ]
 
-SWEEPS      = {"B": SWEEP_B, "A": SWEEP_A, "C": SWEEP_C, "D": SWEEP_D, "E": SWEEP_E}
-SWEEP_ORDER = ["B", "A", "C", "D", "E"]
+# ---- Sweep F: epsilon distribution ----
+SWEEP_F = [
+    dict(vote_rounds=5, k_splits=25, oversample_factor=0.5, generator_fraction=1.0,
+         epsilon_gen_vote=egv)
+    for egv in [0.25, 0.5, 1.0, 2.0]
+]
+
+SWEEP_BEST = [
+    dict(vote_rounds=5, k_splits=25, oversample_factor=0.25,
+         generator_fraction=1.0, num_synth_factor=1.0, epochs=8000)
+]
+
+SWEEPS      = {"B1": SWEEP_B1, "B5": SWEEP_B5, "B10": SWEEP_B10, "A": SWEEP_A, "C": SWEEP_C, "D": SWEEP_D, "E": SWEEP_E, "F": SWEEP_F, "BEST": SWEEP_BEST}
+SWEEP_ORDER = ["B1", "B5", "B10", "A", "C", "D", "E", "F", "BEST"]
 
 
 # ------------------------------------------------------------------ #
@@ -141,6 +170,8 @@ SWEEP_ORDER = ["B", "A", "C", "D", "E"]
 # ------------------------------------------------------------------ #
 
 def config_label(cfg):
+    if cfg.get("_label") == "baseline":
+        return "no_vote_baseline"
     label = (
         f"ks{cfg['k_splits']}"
         f"_vr{cfg['vote_rounds']}"
@@ -177,6 +208,8 @@ def run_one(cfg, dataset, voting_defaults, base_log_dir,
         "--k_splits",           str(cfg["k_splits"]),
         "--oversample_factor",  str(cfg["oversample_factor"]),
         "--generator_fraction", str(cfg["generator_fraction"]),
+        "--private",      "1",
+        "--epsilon_gen",  str(voting_defaults["epsilon_gen_vote"]),
     ]
 
     print("\n" + "="*70)
@@ -369,14 +402,28 @@ def main():
     # Override voting defaults
     ap.add_argument("--epsilon_vote",    type=float, default=None)
     ap.add_argument("--num_synth_factor",type=float, default=None)
+    ap.add_argument("--epsilon_gen_baseline", type=float, default=None)
+    ap.add_argument("--epsilon_gen_vote",     type=float, default=None)
+    
+    ap.add_argument("--baseline", action="store_true", default=False,
+                help="Run skip_vote baseline before the sweep for comparison")
+    ap.add_argument("--baseline_only", action="store_true", default=False,
+                help="Run only the original no-vote baseline (skip sweep configs)")
 
     args = ap.parse_args()
+
+    if args.baseline_only:
+        args.baseline = True
 
     voting_defaults = dict(VOTING_DEFAULTS)
     if args.epsilon_vote is not None:
         voting_defaults["epsilon_vote"] = args.epsilon_vote
     if args.num_synth_factor is not None:
         voting_defaults["num_synth_factor"] = args.num_synth_factor
+    if args.epsilon_gen_baseline is not None:
+        FIXED["epsilon_gen_baseline"] = args.epsilon_gen_baseline
+    if args.epsilon_gen_vote is not None:
+        voting_defaults["epsilon_gen_vote"] = args.epsilon_gen_vote
 
     patch_sweeps(args.best_k_splits, args.best_vote_rounds, args.best_oversample)
 
@@ -387,9 +434,45 @@ def main():
         sweep_dir = os.path.join(args.base_log_dir, args.dataset, f"sweep_{sweep_name}")
         os.makedirs(sweep_dir, exist_ok=True)
 
-        log_dirs, all_scores = [], []
+        log_dirs, all_scores = [], []   # initialise first
+        
+        ds_fixed = DATASET_FIXED[args.dataset]  # add this line
+        # ---- baseline run ----
+        if args.baseline:
+            baseline_cmd = [
+                sys.executable, args.gen_script,
+                "--dataset",      args.dataset,
+                "--epochs",       ds_fixed["epochs"],
+                "--batch",        str(ds_fixed["batch"]),
+                "--undersample",  str(ds_fixed["undersample"]),
+                "--num_features", ds_fixed["num_features"],
+                "--repeat",       str(ds_fixed["repeat"]),
+                "--classifiers",  *[str(c) for c in ds_fixed["classifiers"]],
+                "--skip_vote",
+                "--private",      "1",                              # add this
+                "--epsilon_gen",  str(FIXED["epsilon_gen_baseline"]), # add this
+            ]
+            baseline_dir = os.path.join(sweep_dir, "baseline_no_vote")
+            os.makedirs(baseline_dir, exist_ok=True)
+            baseline_log = os.path.join(baseline_dir, "output.log")
+            with open(baseline_log, "w") as f:
+                subprocess.run(baseline_cmd, stdout=f, stderr=subprocess.STDOUT)
+            with open(baseline_log) as f:
+                print(f.read())
+            baseline_score = parse_score(baseline_log, args.dataset)
+            print(f"  Baseline (no vote) score: {baseline_score}")
 
-        for cfg in configs:
+            baseline_cfg = dict(vote_rounds=1, k_splits=1, oversample_factor=0.5,
+                            generator_fraction=1.0, _label="baseline")
+            configs    = [baseline_cfg] + list(configs)
+            log_dirs   = [baseline_dir]
+            all_scores = [baseline_score]
+
+        start_idx = 1 if args.baseline else 0
+        if args.baseline_only:
+            start_idx = len(configs)
+
+        for cfg in configs[start_idx:]:
             log_dir, log_file, rc = run_one(
                 cfg, args.dataset, voting_defaults, sweep_dir, args.gen_script)
             log_dirs.append(log_dir)

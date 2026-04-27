@@ -88,6 +88,7 @@ args.add_argument("--repeat", type=int, default=2)
 #args.add_argument('--classifiers', nargs='+', type=int, help='list of integers', default=[2])
 args.add_argument('--classifiers', nargs='+', type=int, help='list of integers', default=[0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11])
 args.add_argument("--data_type", default='generated') #both, real, generated
+args.add_argument("--epsilon_gen", type=float, default=1.0)
 # ============== VOTING ARGUMENTS ==============
 args.add_argument("--skip_vote", action="store_true", default=False)
 args.add_argument("--vote_rounds", type=int, default=1)
@@ -450,11 +451,8 @@ def main(dataset, undersampled_rate, n_features_arg, mini_batch_size_arg, how_ma
         print("census dataset") # this is heterogenous
 
         print(socket.gethostname())
-        if 'g0' not in socket.gethostname() and 'p0' not in socket.gethostname():
-            data = np.load("../data/real/census/train.npy")
-        else:
-            data = np.load(
-                "/home/user/Dropbox_from/Current_research/privacy/DPDR/data/real/census/train.npy")
+        data_df, metadata = load_dataset(modality='single_table', dataset='census')
+        data, _, _ = preprocess_sdgym_single_table(data_df, metadata)
 
         numerical_columns = [0, 5, 16, 17, 18, 29, 38]
         ordinal_columns = []
@@ -687,7 +685,8 @@ def main(dataset, undersampled_rate, n_features_arg, mini_batch_size_arg, how_ma
 
         print("dataset is", dataset)
         print(socket.gethostname())
-        data, categorical_columns, ordinal_columns = load_dataset('intrusion')
+        data_df, metadata = load_dataset(modality='single_table', dataset='intrusion')
+        data, _, _ = preprocess_sdgym_single_table(data_df, metadata)
 
         """ some specifics on this dataset """
         n_classes = 5
@@ -731,17 +730,8 @@ def main(dataset, undersampled_rate, n_features_arg, mini_batch_size_arg, how_ma
 
         print("dataset is", dataset)
         print(socket.gethostname())
-        if 'g0' not in socket.gethostname() and 'p0' not in socket.gethostname():
-            train_data = np.load("../data/real/covtype/train.npy")
-            test_data = np.load("../data/real/covtype/test.npy")
-            # we put them together and make a new train/test split in the following
-            data = np.concatenate((train_data, test_data))
-        else:
-            train_data = np.load(
-                "/home/user/Dropbox_from/Current_research/privacy/DPDR/data/real/covtype/train.npy")
-            test_data = np.load(
-                "/home/user/Dropbox_from/Current_research/privacy/DPDR/data/real/covtype/test.npy")
-            data = np.concatenate((train_data, test_data))
+        data_df, metadata = load_dataset(modality='single_table', dataset='covtype')
+        data, _, _ = preprocess_sdgym_single_table(data_df, metadata)
 
         """ some specifics on this dataset """
         numerical_columns = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]
@@ -1012,7 +1002,7 @@ def main(dataset, undersampled_rate, n_features_arg, mini_batch_size_arg, how_ma
         if is_private:
             print("private")
             # desired privacy level
-            epsilon = 1.0
+            epsilon = arguments.epsilon_gen
             delta = 1e-5
             # k = n_classes + 1   # this dp analysis has been updated
             k = 2

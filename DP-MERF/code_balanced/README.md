@@ -14,9 +14,30 @@ To run the experiments, use the following settings
 
 #### DP-MERF
 epsilon = 1.0
-- `python gen_balanced.py --data 2d -noise 5. --synth-spec-string norm_k5_n100000_row5_col5_noise0.2 -ep 50 --log-name dpmerf_syn2d_exp --gen-spec 200,500,500,200 --rff-sigma 0.50 -lr 3e-3 --d-rff 30000`
-- `python gen_balanced.py --sample_generator_factor 0.5 --random_sample_factor 0.25 --vote_rounds 5 -ep 50 --gen-batch-size 5000 --data 2d -noise 5. --synth-spec-string norm_k5_n100000_row5_col5_noise0.2  --gen-spec 200,500,500,200 --rff-sigma 0.50 -lr 3e-3 --d-rff 30000 `
-- `python gen_balanced.py --initial_population_factor 1 --num_synth_factor 1 --sample_generator_factor 0.5 --random_sample_factor 0.5 --vote_rounds 20 -ep 50 --noise_multiplier_vote 1 --gen-batch-size 5000 --data 2d -noise 5. --synth-spec-string norm_k5_n100000_row5_col5_noise0.2  --gen-spec 200,500,500,200 --rff-sigma 0.50 -lr 3e-3 --d-rff 30000 `
+- `python gen_balanced.py --data 2d -noise 5. --synth-spec-string norm_k5_n100000_row5_col5_noise0.2 -ep 50 --log-name dpmerf_syn2d_exp --gen-spec 200,500,500,200 --rff-sigma 0.50 -lr 3e-3 --d-rff 30000 --model-path pt_models/epsilon_1.0/gen.pt`
+
+
+# Step 1 — find best k_splits
+python run_ablations_gen_balanced.py --sweep B1
+python run_ablations_gen_balanced.py --sweep B5 --baseline
+python run_ablations_gen_balanced.py --sweep B10
+
+
+# Step 2 — find best vote_rounds, using best k_splits from B (e.g. 2)
+python run_ablations_gen_balanced.py --sweep A --best_k_splits 2
+
+# Step 3 — find best oversample_factor
+python run_ablations_gen_balanced.py --sweep C --best_k_splits 2 --best_vote_rounds 1
+
+# Step 4 — find best generator_fraction
+python run_ablations_gen_balanced.py --sweep D --best_k_splits 2 --best_vote_rounds 1 --best_oversample 0.5
+
+# Step 5 — find best num_synth_factor
+python run_ablations_gen_balanced.py --sweep E --best_k_splits 2 --best_vote_rounds 1 --best_oversample 0.5
+
+# Step 6 — interaction sweep
+python run_ablations_gen_balanced.py --sweep F --best_num_synth 0.5
+
 #### DP-CGAN
 this code is found in the `../dpcgan/` directory.
 
@@ -33,7 +54,7 @@ epsilon = 1.0
 
 ## Experiments on MNIST
 
-In order to reproduce our experiments, you can run the commands outlined below.
+In ord`e`r to reproduce our experiments, you can run the commands outlined below.
 All hyperparameters have been set to the values used in the paper and can be examined in the respective files. Random seats for five runs used in the paper are 1-5
 Please note, that DP-MERF downloads datasets, while the DP-CGAN code assumes they already exist, so make sure to run DP-MERF first.
 

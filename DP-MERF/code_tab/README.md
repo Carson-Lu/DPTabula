@@ -35,3 +35,27 @@ classifiers - a list of methods to test, by default all methods are run.
 ## Example
 
 -  `python single_generator_priv_all.py --dataset credit --private 0 --epochs 2000 --batch 0.3 --num_features 1000 --undersample 0.5 --repeat 2 --classifiers 1 2 5`
+
+
+# Step 1 — find best k_splits on adult
+python run_ablations_tabular.py --dataset adult --sweep B
+
+# Step 2 — find best vote_rounds
+python run_ablations_tabular.py --dataset adult --sweep A --best_k_splits 25 --baseline
+
+# Step 3 — find best oversample_factor
+python run_ablations_tabular.py --dataset adult --sweep C --best_k_splits 25 --best_vote_rounds 1
+
+# Step 4 — find best generator_fraction
+python run_ablations_tabular.py --dataset adult --sweep D --best_k_splits 25 --best_vote_rounds 1 --best_oversample 0.5
+
+# Step 5 — test num_synth_factor
+python run_ablations_tabular.py --dataset adult --sweep E --best_k_splits 25 --best_vote_rounds 1 --best_oversample 0.5
+
+# Run on a different dataset with the same best config
+python run_ablations_tabular.py --dataset census --sweep B
+
+
+python single_generator_priv_all.py --dataset adult --skip_vote \
+    --epochs 200 --batch 0.1 --undersample 0.4 \
+    --num_features 2000 --repeat 3

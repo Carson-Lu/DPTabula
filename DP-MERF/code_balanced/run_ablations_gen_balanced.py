@@ -84,7 +84,7 @@ SWEEP_B10 = [
 # Use best k_splits from B (default 2). k_splits=1 not re-tested.
 SWEEP_A = [
     dict(vote_rounds=r, k_splits=2, oversample_factor=0.5, generator_fraction=1.0)
-    for r in [1, 2, 3, 5]
+    for r in [1, 5, 10, 20]
 ]
 
 # ---- Sweep C: oversample_factor — extra candidates relative to n_per_split ----
@@ -140,9 +140,9 @@ SWEEP_ORDER = ["B1", "B5", "B10", "A", "C", "D", "E", "F"]
 # ------------------------------------------------------------------ #
 #  Helpers                                                            #
 # ------------------------------------------------------------------ #
-
 def config_label(cfg):
-    """Short human-readable label for a config dict."""
+    if cfg.get("_label") == "baseline":
+        return "no_vote_baseline"
     label = (
         f"ks{cfg['k_splits']}"
         f"_vr{cfg['vote_rounds']}"
@@ -345,6 +345,10 @@ def main():
                     help="Best oversample_factor from sweep C. Patches D, E.")
     ap.add_argument("--best_num_synth",   type=float, default=None,
                     help="Best num_synth_factor from sweep E. Patches F.")
+    ap.add_argument("--baseline", action="store_true", default=False,
+                    help="Run skip_vote baseline before the sweep for comparison")
+    ap.add_argument("--baseline_only", action="store_true", default=False,
+                    help="Run only the baseline, skip sweep configs")
 
     args = ap.parse_args()
 
@@ -359,6 +363,9 @@ def main():
     # Patch sweeps with best results from earlier sweeps
     patch_sweeps(args.best_k_splits, args.best_vote_rounds,
                  args.best_oversample, args.best_num_synth)
+    
+    if args.baseline_only:
+        args.baseline = True
 
     sweeps_to_run = SWEEP_ORDER if args.sweep == "all" else [args.sweep]
 
@@ -369,7 +376,43 @@ def main():
 
         log_dirs, scores = [], []
 
-        for cfg in configs:
+        if args.baseline:
+            baseline_dir = os.path.join(sweep_dir, "baseline_no_vote") + "/"
+            os.makedirs(baseline_dir, exist_ok=True)
+            baseline_cmd = [
+                sys.executable, args.gen_script,
+                "--data",               fixed["data"],
+                "--log-dir",            baseline_dir,
+                "--model_path",         fixed["model_path"],
+                "--gen-spec",           fixed["gen_spec"],
+                "--synth-spec-string",  fixed["synth_spec_string"],
+                "--rff-sigma",          fixed["rff_sigma"],
+                "--lr",                 fixed["lr"],
+                "--d-rff",              str(fixed["d_rff"]),
+                "--noise-factor",       str(fixed["noise_factor"]),
+                "--epochs",             str(fixed["epochs"]),
+                "--seed",               str(fixed["seed"]),
+                "--skip_vote",
+            ]
+            print("\n" + "="*70)
+            print("[sweep] Running baseline (no voting)")
+            print("  " + " ".join(baseline_cmd))
+            print("="*70)
+            subprocess.run(baseline_cmd, capture_output=False)
+            baseline_score = read_eval_score(baseline_dir)
+            print(f"  -> baseline score: {baseline_score}")
+
+            baseline_cfg = dict(vote_rounds=0, k_splits=0, oversample_factor=0.0,
+                                generator_fraction=1.0, _label="baseline")
+            configs  = [baseline_cfg] + list(configs)
+            log_dirs = [baseline_dir]
+            scores   = [baseline_score]
+
+        start_idx = 1 if args.baseline else 0
+        if args.baseline_only:
+            start_idx = len(configs)
+
+        for cfg in configs[start_idx:]:
             log_dir, rc = run_one(cfg, fixed, sweep_dir, args.gen_script)
             log_dirs.append(log_dir)
             score = read_eval_score(log_dir)
@@ -381,7 +424,7 @@ def main():
         plot_combined_grid(sweep_name, configs, log_dirs, sweep_dir)
 
         summary = [{"config": config_label(c), "score": s}
-                   for c, s in zip(configs, scores)]
+                for c, s in zip(configs, scores)]
         with open(os.path.join(sweep_dir, "summary.json"), "w") as f:
             json.dump(summary, f, indent=2)
         print(f"[sweep] Summary -> {os.path.join(sweep_dir, 'summary.json')}")
