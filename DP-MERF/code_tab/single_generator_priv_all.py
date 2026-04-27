@@ -11,7 +11,7 @@ import torch.optim as optim
 import util
 import random
 import socket
-from sdgym import load_dataset
+from sdgym.datasets import load_dataset
 import argparse
 import sys
 
@@ -35,11 +35,12 @@ from sklearn.ensemble import GradientBoostingClassifier
 from sklearn.neural_network import MLPClassifier
 import xgboost
 
+from sklearn.preprocessing import LabelEncoder
 from sklearn.metrics import roc_auc_score
 from sklearn.metrics import average_precision_score
 from sklearn.model_selection import ParameterGrid
 from autodp import privacy_calibrator
-from sklearn.preprocessing import OneHotEncoder
+from sklearn.preprocessing import OneHotEncoder, OrdinalEncoder
 from sklearn.metrics import f1_score
 
 from autodp import privacy_calibrator
@@ -48,6 +49,9 @@ import warnings
 warnings.filterwarnings('ignore')
 
 import os
+
+sys.path.append("..")
+from utils.histogram_voting import build_columns_info, features_to_samples, generate_random, run_voting_pipeline
 
 #Results_PATH = "/".join([os.getenv("HOME"), "condMMD/"])
 
@@ -84,6 +88,14 @@ args.add_argument("--repeat", type=int, default=2)
 #args.add_argument('--classifiers', nargs='+', type=int, help='list of integers', default=[2])
 args.add_argument('--classifiers', nargs='+', type=int, help='list of integers', default=[0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11])
 args.add_argument("--data_type", default='generated') #both, real, generated
+# ============== VOTING ARGUMENTS ==============
+args.add_argument("--skip_vote", action="store_true", default=False)
+args.add_argument("--vote_rounds", type=int, default=1)
+args.add_argument("--k_splits", type=int, default=1)
+args.add_argument("--oversample_factor", type=float, default=0.5)
+args.add_argument("--generator_fraction", type=float, default=1.0)
+args.add_argument("--epsilon_vote", type=float, default=1.0)
+args.add_argument("--num_synth_factor", type=float, default=1.0)
 arguments=args.parse_args()
 print("arg", arguments)
 list_epochs=[int(i) for i in arguments.epochs.split(',')]
@@ -209,7 +221,7 @@ def undersample(raw_input_features, raw_labels, undersampled_rate):
     # take random 10 percent of the negative labelled data
     in_keep = np.random.permutation(np.sum(idx_negative_label))
     under_sampling_rate = undersampled_rate  # 0.4
-    in_keep = in_keep[0:np.int(np.sum(idx_negative_label) * under_sampling_rate)]
+    in_keep = in_keep[0:int(np.sum(idx_negative_label) * under_sampling_rate)]
 
     neg_samps_input = neg_samps_input[in_keep, :]
     neg_samps_label = neg_samps_label[in_keep]
@@ -220,8 +232,97 @@ def undersample(raw_input_features, raw_labels, undersampled_rate):
     return feature_selected, label_selected
 
 
+def preprocess_sdgym_single_table(data_df, metadata, table_name=None, binary_label_map=None):
+    """Encode sdgym single-table data into numeric arrays while preserving column-type indices.
+
+    If table_name is not provided, it is inferred when metadata contains exactly one table.
+    The last column is treated as the target column.
+    """
+    data_df = data_df.copy()
+
+    if table_name is None:
+        table_names = list(metadata['tables'].keys())
+        if len(table_names) != 1:
+            raise ValueError("Could not infer table_name: metadata contains multiple tables.")
+        table_name = table_names[0]
+
+    table_meta = metadata['tables'][table_name]['columns']
+    all_columns = list(data_df.columns)
+
+    categorical_columns = [
+        idx for idx, col in enumerate(all_columns)
+        if table_meta[col].get('sdtype') in ['categorical', 'boolean']
+        and idx != len(all_columns) - 1  # exclude label
+    ]
+    ordinal_columns = [
+        idx for idx, col in enumerate(all_columns)
+        if table_meta[col].get('sdtype') == 'ordinal'
+        and idx != len(all_columns) - 1  # exclude label
+    ]
+
+    target_col = all_columns[-1]
+    feature_cols = all_columns[:-1]
+    feature_cols_to_encode = [
+        col for col in feature_cols
+        if table_meta[col].get('sdtype') in ['categorical', 'boolean', 'ordinal']
+    ]
+
+    # Use sklearn's vectorized encoder for non-numeric feature columns.
+    if len(feature_cols_to_encode) > 0:
+        feat_encoder = OrdinalEncoder(dtype=np.float64)
+        data_df.loc[:, feature_cols_to_encode] = feat_encoder.fit_transform(
+            data_df[feature_cols_to_encode].astype(str)
+        )
+
+    label_series = data_df[target_col].astype(str).str.strip()
+
+    if binary_label_map is not None and set(label_series.unique()) == set(binary_label_map.keys()):
+        data_df[target_col] = label_series.map(binary_label_map).astype(int)
+    else:
+        unique_labels = label_series.unique()
+
+        if len(unique_labels) == 2:
+            # Default binary behavior: map majority class to 0 and minority class to 1,
+            # matching downstream undersample(raw_labels==0/1) expectations.
+            label_counts = label_series.value_counts()
+            inferred_binary_map = {
+                label_counts.index[0]: 0,
+                label_counts.index[1]: 1,
+            }
+            data_df[target_col] = label_series.map(inferred_binary_map).astype(int)
+        else:
+            label_encoder = LabelEncoder()
+            data_df[target_col] = label_encoder.fit_transform(label_series)
+
+    # Ensure downstream NumPy ops (e.g., meddistance/dist_matrix) always receive numeric arrays.
+    data = data_df.apply(pd.to_numeric, errors='coerce').to_numpy(dtype=np.float64)
+
+    # If any unexpected non-numeric values remain after encoding, fail fast with a clear message.
+    if np.isnan(data).any():
+        raise ValueError("NaN detected after sdgym preprocessing. Check source data/metadata encoding.")
+
+    return data, categorical_columns, ordinal_columns
+
+######################################## voting helpers ############################################################################
+
+def generator_fn_heterogeneous(model, n, label, weights, input_size, num_numerical_inputs, device):
+    """Generate n samples for a given label from the heterogeneous generator."""
+    label_input = torch.full((n, 1), label, dtype=torch.float).to(device)
+    feature_input = torch.randn((n, input_size - 1)).to(device)
+    outputs = model(torch.cat((feature_input, label_input), 1))
+    output_numerical   = outputs[:, 0:num_numerical_inputs]
+    output_categorical = torch.round(outputs[:, num_numerical_inputs:])
+    result = torch.cat((output_numerical, output_categorical), 1).cpu().detach().numpy()
+    return features_to_samples(result, list(range(num_numerical_inputs)),
+                               list(range(num_numerical_inputs, result.shape[1])))
 
 
+def generator_fn_homogeneous(model, n, label, weights, input_size, device):
+    """Generate n samples for a given label from the homogeneous generator."""
+    label_input = torch.full((n,), float(label)).to(device)
+    feature_input = torch.randn((n, input_size - 1)).to(device)
+    result = model(torch.cat((feature_input, label_input[:, None]), 1)).cpu().detach().numpy()
+    return features_to_samples(result, list(range(result.shape[1])), [])
 
 
 ######################################## beginning of main script ############################################################################
@@ -273,7 +374,7 @@ def main(dataset, undersampled_rate, n_features_arg, mini_batch_size_arg, how_ma
         in_keep = np.random.permutation(np.sum(idx_negative_label))
         under_sampling_rate = undersampled_rate  # 0.01
         # under_sampling_rate = 0.3
-        in_keep = in_keep[0:np.int(np.sum(idx_negative_label) * under_sampling_rate)]
+        in_keep = in_keep[0:int(np.sum(idx_negative_label) * under_sampling_rate)]
 
         neg_samps_input = neg_samps_input[in_keep, :]
         neg_samps_label = neg_samps_label[in_keep]
@@ -331,7 +432,7 @@ def main(dataset, undersampled_rate, n_features_arg, mini_batch_size_arg, how_ma
         in_keep = np.random.permutation(np.sum(idx_negative_label))
         under_sampling_rate = undersampled_rate #0.01
         # under_sampling_rate = 0.3
-        in_keep = in_keep[0:np.int(np.sum(idx_negative_label) * under_sampling_rate)]
+        in_keep = in_keep[0:int(np.sum(idx_negative_label) * under_sampling_rate)]
 
         neg_samps_input = neg_samps_input[in_keep, :]
         neg_samps_label = neg_samps_label[in_keep]
@@ -382,7 +483,7 @@ def main(dataset, undersampled_rate, n_features_arg, mini_batch_size_arg, how_ma
         # take random 10 percent of the negative labelled data
         in_keep = np.random.permutation(np.sum(idx_negative_label))
         under_sampling_rate = undersampled_rate #0.4
-        in_keep = in_keep[0:np.int(np.sum(idx_negative_label) * under_sampling_rate)]
+        in_keep = in_keep[0:int(np.sum(idx_negative_label) * under_sampling_rate)]
 
         neg_samps_input = neg_samps_input[in_keep, :]
         neg_samps_label = neg_samps_label[in_keep]
@@ -472,7 +573,7 @@ def main(dataset, undersampled_rate, n_features_arg, mini_batch_size_arg, how_ma
         # take random 10 percent of the negative labelled data
         in_keep = np.random.permutation(np.sum(idx_negative_label))
         under_sampling_rate = undersampled_rate #0.5
-        in_keep = in_keep[0:np.int(np.sum(idx_negative_label) * under_sampling_rate)]
+        in_keep = in_keep[0:int(np.sum(idx_negative_label) * under_sampling_rate)]
 
         neg_samps_input = neg_samps_input[in_keep, :]
         neg_samps_label = neg_samps_label[in_keep]
@@ -488,17 +589,20 @@ def main(dataset, undersampled_rate, n_features_arg, mini_batch_size_arg, how_ma
         print("dataset is", dataset) # this is heterogenous
         print(socket.gethostname())
         #if 'g0' not in socket.gethostname():
-        data, categorical_columns, ordinal_columns = load_dataset('adult')
+        data_df, metadata = load_dataset(modality='single_table', dataset='adult')
+        data, categorical_columns, ordinal_columns = preprocess_sdgym_single_table(data_df, metadata)
         # else:
 
         """ some specifics on this dataset """
-        numerical_columns = list(set(np.arange(data[:, :-1].shape[1])) - set(categorical_columns + ordinal_columns))
+        target_col_idx = data.shape[1] - 1
+        numerical_columns = list(set(np.arange(target_col_idx)) - set(categorical_columns + ordinal_columns))
         n_classes = 2
 
-        data = data[:, numerical_columns + ordinal_columns + categorical_columns]
+        # Keep label as the final column after reordering feature groups.
+        data = data[:, numerical_columns + ordinal_columns + categorical_columns + [target_col_idx]]
 
         num_numerical_inputs = len(numerical_columns)
-        num_categorical_inputs = len(categorical_columns + ordinal_columns) - 1
+        num_categorical_inputs = len(categorical_columns + ordinal_columns)
 
         inputs = data[:, :-1]
         target = data[:, -1]
@@ -555,7 +659,7 @@ def main(dataset, undersampled_rate, n_features_arg, mini_batch_size_arg, how_ma
         in_keep = np.random.permutation(np.sum(idx_negative_label))
         under_sampling_rate = undersampled_rate  # 0.01
         # under_sampling_rate = 0.3
-        in_keep = in_keep[0:np.int(np.sum(idx_negative_label) * under_sampling_rate)]
+        in_keep = in_keep[0:int(np.sum(idx_negative_label) * under_sampling_rate)]
 
         neg_samps_input = neg_samps_input[in_keep, :]
         neg_samps_label = neg_samps_label[in_keep]
@@ -611,7 +715,7 @@ def main(dataset, undersampled_rate, n_features_arg, mini_batch_size_arg, how_ma
         # take random 40% of the negative labelled data
         in_keep = np.random.permutation(np.sum(idx_negative_label))
         under_sampling_rate = undersampled_rate#0.3
-        in_keep = in_keep[0:np.int(np.sum(idx_negative_label) * under_sampling_rate)]
+        in_keep = in_keep[0:int(np.sum(idx_negative_label) * under_sampling_rate)]
 
         neg_samps_input = neg_samps_input[in_keep, :]
         neg_samps_label = neg_samps_label[in_keep]
@@ -679,7 +783,7 @@ def main(dataset, undersampled_rate, n_features_arg, mini_batch_size_arg, how_ma
         # take random 40% of the negative labelled data
         in_keep = np.random.permutation(np.sum(idx_negative_label))
         under_sampling_rate = undersampled_rate  # 0.3
-        in_keep = in_keep[0:np.int(np.sum(idx_negative_label) * under_sampling_rate)]
+        in_keep = in_keep[0:int(np.sum(idx_negative_label) * under_sampling_rate)]
 
         neg_samps_input = neg_samps_input[in_keep, :]
         neg_samps_label = neg_samps_label[in_keep]
@@ -787,7 +891,10 @@ def main(dataset, undersampled_rate, n_features_arg, mini_batch_size_arg, how_ma
 
         # one-hot encoding of labels.
         n, input_dim = X_train.shape
-        onehot_encoder = OneHotEncoder(sparse=False)
+        try:
+            onehot_encoder = OneHotEncoder(sparse_output=False)
+        except TypeError:
+            onehot_encoder = OneHotEncoder(sparse=False)
         y_train = np.expand_dims(y_train, 1)
         true_labels = onehot_encoder.fit_transform(y_train)
 
@@ -796,7 +903,7 @@ def main(dataset, undersampled_rate, n_features_arg, mini_batch_size_arg, how_ma
         # MODEL
 
         # model specifics
-        mini_batch_size = np.int(np.round(mini_batch_size_arg * n))
+        mini_batch_size = int(np.round(mini_batch_size_arg * n))
         print("minibatch: ", mini_batch_size)
         input_size = 10 + 1
         hidden_size_1 = 4 * input_dim
@@ -1049,25 +1156,50 @@ def main(dataset, undersampled_rate, n_features_arg, mini_batch_size_arg, how_ma
 
             """ draw final data samples """
 
-            label_input = torch.multinomial(torch.Tensor([weights]), n, replacement=True).type(torch.FloatTensor)
-            label_input = label_input.transpose_(0, 1)
-            label_input = label_input.to(device)
+            if arguments.skip_vote:
+                label_input = torch.multinomial(torch.Tensor([weights]), n, replacement=True).type(torch.FloatTensor)
+                label_input = label_input.transpose_(0, 1)
+                label_input = label_input.to(device)
 
-            # (2) generate corresponding features
-            feature_input = torch.randn((n, input_size - 1)).to(device)
-            input_to_model = torch.cat((feature_input, label_input), 1)
-            outputs = model(input_to_model)
+                # (2) generate corresponding features
+                feature_input = torch.randn((n, input_size - 1)).to(device)
+                input_to_model = torch.cat((feature_input, label_input), 1)
+                outputs = model(input_to_model)
 
+                # (3) round the categorial features
+                output_numerical = outputs[:, 0:num_numerical_inputs]
+                output_categorical = outputs[:, num_numerical_inputs:]
+                output_categorical = torch.round(output_categorical)
 
-            # (3) round the categorial features
-            output_numerical = outputs[:, 0:num_numerical_inputs]
-            output_categorical = outputs[:, num_numerical_inputs:]
-            output_categorical = torch.round(output_categorical)
+                output_combined = torch.cat((output_numerical, output_categorical), 1)
 
-            output_combined = torch.cat((output_numerical, output_categorical), 1)
+                generated_input_features_final = output_combined.cpu().detach().numpy()
+                generated_labels_final = label_input.cpu().detach().numpy()
 
-            generated_input_features_final = output_combined.cpu().detach().numpy()
-            generated_labels_final = label_input.cpu().detach().numpy()
+            else:
+                num_col_indices = list(range(num_numerical_inputs))
+                cat_col_indices = list(range(num_numerical_inputs, input_dim))
+                columns, info   = build_columns_info(X_train, num_col_indices, cat_col_indices)
+
+                gen_fn  = lambda n_s, lbl: generator_fn_heterogeneous(
+                    model, n_s, lbl, weights, input_size, num_numerical_inputs, device)
+                rand_fn = lambda n_s, lbl: generate_random(n_s, columns, info)
+
+                generated_input_features_final, generated_labels_final = run_voting_pipeline(
+                    generator_fn=gen_fn,
+                    random_fn=rand_fn,
+                    generator_fraction=arguments.generator_fraction,
+                    X_train=X_train,
+                    y_train=np.argmax(true_labels, axis=1),
+                    n_classes=n_classes,
+                    num_synth_factor=arguments.num_synth_factor,
+                    k_splits=arguments.k_splits,
+                    vote_rounds=arguments.vote_rounds,
+                    oversample_factor=arguments.oversample_factor,
+                    epsilon_vote=arguments.epsilon_vote,
+                    numerical_col_indices=num_col_indices,
+                    categorical_col_indices=cat_col_indices,
+                )
 
             roc, prc= test_models(generated_input_features_final, generated_labels_final, X_test, y_test, "generated")
             roc_return, prc_return=roc, prc
@@ -1084,28 +1216,54 @@ def main(dataset, undersampled_rate, n_features_arg, mini_batch_size_arg, how_ma
 
             """ now generate samples from the trained network """
 
-            # weights[1] represents the fraction of the positive labels in the dataset,
-            #and we would like to generate a similar fraction of the postive/negative datapoints
-            label_input = (1 * (torch.rand((n)) < weights[1])).type(torch.FloatTensor)
-            label_input = label_input.to(device)
+            if arguments.skip_vote:
+                # weights[1] represents the fraction of the positive labels in the dataset,
+                #and we would like to generate a similar fraction of the postive/negative datapoints
+                label_input = (1 * (torch.rand((n)) < weights[1])).type(torch.FloatTensor)
+                label_input = label_input.to(device)
 
-            feature_input = torch.randn((n, input_size - 1)).to(device)
-            input_to_model = torch.cat((feature_input, label_input[:, None]), 1)
-            outputs = model(input_to_model)
+                feature_input = torch.randn((n, input_size - 1)).to(device)
+                input_to_model = torch.cat((feature_input, label_input[:, None]), 1)
+                outputs = model(input_to_model)
 
-            samp_input_features = outputs
+                samp_input_features = outputs
 
-            label_input_t = torch.zeros((n, n_classes))
-            idx_1 = (label_input == 1.).nonzero()[:, 0]
-            idx_0 = (label_input == 0.).nonzero()[:, 0]
-            label_input_t[idx_1, 1] = 1.
-            label_input_t[idx_0, 0] = 1.
+                label_input_t = torch.zeros((n, n_classes))
+                idx_1 = (label_input == 1.).nonzero()[:, 0]
+                idx_0 = (label_input == 0.).nonzero()[:, 0]
+                label_input_t[idx_1, 1] = 1.
+                label_input_t[idx_0, 0] = 1.
 
-            samp_labels = label_input_t
+                samp_labels = label_input_t
 
-            generated_input_features_final = samp_input_features.cpu().detach().numpy()
-            generated_labels_final = samp_labels.cpu().detach().numpy()
-            generated_labels=np.argmax(generated_labels_final, axis=1)
+                generated_input_features_final = samp_input_features.cpu().detach().numpy()
+                generated_labels_final = samp_labels.cpu().detach().numpy()
+                generated_labels = np.argmax(generated_labels_final, axis=1)
+
+            else:
+                num_col_indices = list(range(input_dim))
+                cat_col_indices = []
+                columns, info   = build_columns_info(X_train, num_col_indices, cat_col_indices)
+
+                gen_fn  = lambda n_s, lbl: generator_fn_homogeneous(
+                    model, n_s, lbl, weights, input_size, device)
+                rand_fn = lambda n_s, lbl: generate_random(n_s, columns, info)
+
+                generated_input_features_final, generated_labels = run_voting_pipeline(
+                    generator_fn=gen_fn,
+                    random_fn=rand_fn,
+                    generator_fraction=arguments.generator_fraction,
+                    X_train=X_train,
+                    y_train=np.argmax(true_labels, axis=1),
+                    n_classes=n_classes,
+                    num_synth_factor=arguments.num_synth_factor,
+                    k_splits=arguments.k_splits,
+                    vote_rounds=arguments.vote_rounds,
+                    oversample_factor=arguments.oversample_factor,
+                    epsilon_vote=arguments.epsilon_vote,
+                    numerical_col_indices=num_col_indices,
+                    categorical_col_indices=cat_col_indices,
+                )
 
             f1 = test_models(generated_input_features_final, generated_labels, X_test, y_test, "generated")
             f1_return=f1
@@ -1347,8 +1505,3 @@ if __name__ == '__main__':
             print("\n\n", "Max F1! ", max_aver_f1, "*"*20)
             print("Setup: ", max_elem)
             print('*' * 30)
-
-
-
-
-
