@@ -97,6 +97,9 @@ args.add_argument("--oversample_factor", type=float, default=0.5)
 args.add_argument("--generator_fraction", type=float, default=1.0)
 args.add_argument("--epsilon_vote", type=float, default=1.0)
 args.add_argument("--num_synth_factor", type=float, default=1.0)
+args.add_argument("--model_dir", type=str, default="pt_models",
+                  help="directory to save/load trained models")
+
 arguments=args.parse_args()
 print("arg", arguments)
 list_epochs=[int(i) for i in arguments.epochs.split(',')]
@@ -1062,82 +1065,108 @@ def main(dataset, undersampled_rate, n_features_arg, mini_batch_size_arg, how_ma
         # End of Privatising quantities if necessary
         ####################################################
 
-        ##################################################################################################################
+##################################################################################################################
         # TRAINING THE GENERATOR
 
-        print('Starting Training')
+        # construct model path based on dataset, epochs, num_features, and epsilon_gen only
+        # (not voting params — generator is reusable across voting configs)
+        priv_str = f"eps{arguments.epsilon_gen}" if is_private else "no_priv"
+        model_dir = os.path.join(arguments.model_dir, dataset,
+                                 f"epochs{how_many_epochs_arg}_feat{n_features_arg}_{priv_str}",
+                                 f"seed{seed_number}")
+        os.makedirs(model_dir, exist_ok=True)
+        model_file = os.path.join(model_dir, "model.pt")
+        aux_file   = os.path.join(model_dir, "aux.npz")
 
-        for epoch in range(how_many_epochs):  # loop over the dataset multiple times
+        if os.path.isfile(model_file) and os.path.isfile(aux_file):
+            print(f"Existing model found at {model_file}, loading...")
+            model.load_state_dict(torch.load(model_file, map_location=device))
+            aux       = np.load(aux_file, allow_pickle=True)
+            W_freq    = aux["W_freq"]
+            weights   = aux["weights"]
+            mean_emb1 = torch.tensor(aux["mean_emb1"]).to(device)
+        else:
+            print('Starting Training')
 
-            running_loss = 0.0
+            for epoch in range(how_many_epochs):  # loop over the dataset multiple times
 
-            for i in range(how_many_iter):
+                running_loss = 0.0
 
-                """ computing mean embedding of generated data """
-                # zero the parameter gradients
-                optimizer.zero_grad()
+                for i in range(how_many_iter):
 
-                if dataset in homogeneous_datasets: # In our case, if a dataset is homogeneous, then it is a binary dataset.
+                    """ computing mean embedding of generated data """
+                    # zero the parameter gradients
+                    optimizer.zero_grad()
 
-                    label_input = (1 * (torch.rand((mini_batch_size)) < weights[1])).type(torch.FloatTensor)
-                    label_input = label_input.to(device)
-                    feature_input = torch.randn((mini_batch_size, input_size-1)).to(device)
-                    input_to_model = torch.cat((feature_input, label_input[:,None]), 1)
+                    if dataset in homogeneous_datasets: # In our case, if a dataset is homogeneous, then it is a binary dataset.
 
-                    #we feed noise + label (like in cond-gan) as input
-                    outputs = model(input_to_model)
+                        label_input = (1 * (torch.rand((mini_batch_size)) < weights[1])).type(torch.FloatTensor)
+                        label_input = label_input.to(device)
+                        feature_input = torch.randn((mini_batch_size, input_size-1)).to(device)
+                        input_to_model = torch.cat((feature_input, label_input[:,None]), 1)
 
-                    """ computing mean embedding of generated samples """
-                    emb2_input_features = RFF_Gauss(n_features, outputs, W_freq)
+                        #we feed noise + label (like in cond-gan) as input
+                        outputs = model(input_to_model)
 
-                    label_input_t = torch.zeros((mini_batch_size, n_classes))
-                    idx_1 = (label_input == 1.).nonzero()[:,0]
-                    idx_0 = (label_input == 0.).nonzero()[:,0]
-                    label_input_t[idx_1, 1] = 1.
-                    label_input_t[idx_0, 0] = 1.
+                        """ computing mean embedding of generated samples """
+                        emb2_input_features = RFF_Gauss(n_features, outputs, W_freq)
 
-                    emb2_labels = Feature_labels(label_input_t, weights)
-                    outer_emb2 = torch.einsum('ki,kj->kij', [emb2_input_features, emb2_labels])
-                    mean_emb2 = torch.mean(outer_emb2, 0)
+                        label_input_t = torch.zeros((mini_batch_size, n_classes))
+                        idx_1 = (label_input == 1.).nonzero()[:,0]
+                        idx_0 = (label_input == 0.).nonzero()[:,0]
+                        label_input_t[idx_1, 1] = 1.
+                        label_input_t[idx_0, 0] = 1.
 
-                else:  # heterogeneous data
+                        emb2_labels = Feature_labels(label_input_t, weights)
+                        outer_emb2 = torch.einsum('ki,kj->kij', [emb2_input_features, emb2_labels])
+                        mean_emb2 = torch.mean(outer_emb2, 0)
 
-                    # (1) generate labels
-                    label_input = torch.multinomial(torch.Tensor([weights]), mini_batch_size, replacement=True).type(torch.FloatTensor)
-                    label_input=torch.cat((label_input, torch.arange(len(weights), out=torch.FloatTensor()).unsqueeze(0)),1) #to avoid no labels
-                    label_input = label_input.transpose_(0,1)
-                    label_input = label_input.to(device)
+                    else:  # heterogeneous data
 
-                    # (2) generate corresponding features
-                    feature_input = torch.randn((mini_batch_size+len(weights), input_size-1)).to(device)
-                    input_to_model = torch.cat((feature_input, label_input), 1)
-                    outputs = model(input_to_model)
+                        # (1) generate labels
+                        label_input = torch.multinomial(torch.Tensor([weights]), mini_batch_size, replacement=True).type(torch.FloatTensor)
+                        label_input=torch.cat((label_input, torch.arange(len(weights), out=torch.FloatTensor()).unsqueeze(0)),1) #to avoid no labels
+                        label_input = label_input.transpose_(0,1)
+                        label_input = label_input.to(device)
 
-                    # (3) compute the embeddings of those
-                    numerical_samps = outputs[:, 0:num_numerical_inputs] #[4553,6]
-                    emb2_numerical = RFF_Gauss(n_features, numerical_samps, W_freq) #W_freq [n_features/2,6], n_features=10000
+                        # (2) generate corresponding features
+                        feature_input = torch.randn((mini_batch_size+len(weights), input_size-1)).to(device)
+                        input_to_model = torch.cat((feature_input, label_input), 1)
+                        outputs = model(input_to_model)
 
-                    categorical_samps = outputs[:, num_numerical_inputs:] #[4553,8]
+                        # (3) compute the embeddings of those
+                        numerical_samps = outputs[:, 0:num_numerical_inputs] #[4553,6]
+                        emb2_numerical = RFF_Gauss(n_features, numerical_samps, W_freq) #W_freq [n_features/2,6], n_features=10000
 
-                    emb2_categorical = categorical_samps /(torch.sqrt(torch.Tensor([num_categorical_inputs]))).to(device) # 8
+                        categorical_samps = outputs[:, num_numerical_inputs:] #[4553,8]
 
-                    emb2_input_features = torch.cat((emb2_numerical, emb2_categorical), 1)
+                        emb2_categorical = categorical_samps /(torch.sqrt(torch.Tensor([num_categorical_inputs]))).to(device) # 8
 
-                    generated_labels = onehot_encoder.fit_transform(label_input.cpu().detach().numpy()) #[1008]
-                    emb2_labels = Feature_labels(torch.Tensor(generated_labels), weights)
-                    outer_emb2 = torch.einsum('ki,kj->kij', [emb2_input_features, emb2_labels])
-                    mean_emb2 = torch.mean(outer_emb2, 0)
+                        emb2_input_features = torch.cat((emb2_numerical, emb2_categorical), 1)
 
-                loss = torch.norm(mean_emb1 - mean_emb2, p=2) ** 2
+                        generated_labels = onehot_encoder.fit_transform(label_input.cpu().detach().numpy()) #[1008]
+                        emb2_labels = Feature_labels(torch.Tensor(generated_labels), weights)
+                        outer_emb2 = torch.einsum('ki,kj->kij', [emb2_input_features, emb2_labels])
+                        mean_emb2 = torch.mean(outer_emb2, 0)
 
-                loss.backward()
-                optimizer.step()
+                    loss = torch.norm(mean_emb1 - mean_emb2, p=2) ** 2
 
-                running_loss += loss.item()
+                    loss.backward()
+                    optimizer.step()
 
-            if epoch % 100 == 0:
-                print('epoch # and running loss are ', [epoch, running_loss])
-                training_loss_per_epoch[epoch] = running_loss
+                    running_loss += loss.item()
+
+                if epoch % 100 == 0:
+                    print('epoch # and running loss are ', [epoch, running_loss])
+                    training_loss_per_epoch[epoch] = running_loss
+
+            # save model and auxiliary quantities needed for generation
+            torch.save(model.state_dict(), model_file)
+            np.savez(aux_file,
+                     W_freq=W_freq,
+                     weights=weights,
+                     mean_emb1=mean_emb1.cpu().detach().numpy())
+            print(f"Model saved to {model_file}")
 
 
 
