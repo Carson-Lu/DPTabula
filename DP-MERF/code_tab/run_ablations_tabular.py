@@ -42,7 +42,7 @@ import matplotlib.pyplot as plt
 # Shared voting defaults — same across all datasets
 VOTING_DEFAULTS = dict(
     epsilon_vote=0.5,
-    epsilon_gen_vote=0.5,
+    epsilon_gen=0.5,
     num_synth_factor=1.0,
     oversample_factor=0.5,
     generator_fraction=1.0,
@@ -57,13 +57,13 @@ FIXED = dict(
 # These match the known good settings from the original paper
 DATASET_FIXED = {
     "adult": dict(
-        epochs="200", batch=0.1, undersample=0.4,
-        num_features="2000", repeat=3,
+        epochs="8000", batch=0.1, undersample=0.4,
+        num_features="1000", repeat=3,
         classifiers=[0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11],
     ),
     "census": dict(
-        epochs="200", batch=0.1, undersample=0.4,
-        num_features="2000", repeat=3,
+        epochs="2000", batch=0.1, undersample=0.4,
+        num_features="10000", repeat=3,
         classifiers=[0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11],
     ),
     "cervical": dict(
@@ -113,12 +113,12 @@ SWEEP_B1 = [
 ]
 
 SWEEP_B5 = [
-    dict(vote_rounds=5, k_splits=ks, oversample_factor=0.25, generator_fraction=1.0)
+    dict(vote_rounds=5, k_splits=ks, oversample_factor=0.25, generator_fraction=1.0, repeat=3)
     for ks in [1, 5, 25, 50]
 ]
 
 SWEEP_B10 = [
-    dict(vote_rounds=10, k_splits=ks, oversample_factor=0.25, generator_fraction=1.0)
+    dict(vote_rounds=10, k_splits=ks, oversample_factor=0.25, generator_fraction=1.0, repeat=3)
     for ks in [1, 5, 25, 50]
 ]
 
@@ -152,17 +152,17 @@ SWEEP_E = [
 # ---- Sweep F: epsilon distribution ----
 SWEEP_F = [
     dict(vote_rounds=5, k_splits=25, oversample_factor=0.5, generator_fraction=1.0,
-         epsilon_gen_vote=egv)
-    for egv in [0.25, 0.5, 1.0, 2.0]
+         epsilon_gen=eg, epsilon_vote=round(1.0 - eg, 2))
+    for eg in [0.1, 0.25, 0.5, 0.75, 0.9]
 ]
 
-SWEEP_BEST = [
+SWEEP_BEST_ADULT = [
     dict(vote_rounds=5, k_splits=25, oversample_factor=0.25,
-         generator_fraction=1.0, num_synth_factor=1.0, epochs=8000)
+         generator_fraction=1.0, num_synth_factor=1.0, epochs=8000, num_features=10000, dataset="adult")
 ]
 
-SWEEPS      = {"B1": SWEEP_B1, "B5": SWEEP_B5, "B10": SWEEP_B10, "A": SWEEP_A, "C": SWEEP_C, "D": SWEEP_D, "E": SWEEP_E, "F": SWEEP_F, "BEST": SWEEP_BEST}
-SWEEP_ORDER = ["B1", "B5", "B10", "A", "C", "D", "E", "F", "BEST"]
+SWEEPS      = {"B1": SWEEP_B1, "B5": SWEEP_B5, "B10": SWEEP_B10, "A": SWEEP_A, "C": SWEEP_C, "D": SWEEP_D, "E": SWEEP_E, "F": SWEEP_F, "BEST_ADULT": SWEEP_BEST_ADULT}
+SWEEP_ORDER = ["B1", "B5", "B10", "A", "C", "D", "E", "F", "BEST_ADULT"]
 
 
 # ------------------------------------------------------------------ #
@@ -180,6 +180,8 @@ def config_label(cfg):
     )
     if cfg.get("num_synth_factor", 1.0) != 1.0:
         label += f"_nsf{cfg['num_synth_factor']}"
+    if "epsilon_gen" in cfg:
+        label += f"_eg{cfg['epsilon_gen']}_ev{cfg['epsilon_vote']}"
     return label
 
 
@@ -209,7 +211,7 @@ def run_one(cfg, dataset, voting_defaults, base_log_dir,
         "--oversample_factor",  str(cfg["oversample_factor"]),
         "--generator_fraction", str(cfg["generator_fraction"]),
         "--private",      "1",
-        "--epsilon_gen",  str(voting_defaults["epsilon_gen_vote"]),
+        "--epsilon_gen",  str(voting_defaults["epsilon_gen"]),
     ]
 
     print("\n" + "="*70)
@@ -403,7 +405,7 @@ def main():
     ap.add_argument("--epsilon_vote",    type=float, default=None)
     ap.add_argument("--num_synth_factor",type=float, default=None)
     ap.add_argument("--epsilon_gen_baseline", type=float, default=None)
-    ap.add_argument("--epsilon_gen_vote",     type=float, default=None)
+    ap.add_argument("--epsilon_gen",     type=float, default=None)
     
     ap.add_argument("--baseline", action="store_true", default=False,
                 help="Run skip_vote baseline before the sweep for comparison")
@@ -422,8 +424,8 @@ def main():
         voting_defaults["num_synth_factor"] = args.num_synth_factor
     if args.epsilon_gen_baseline is not None:
         FIXED["epsilon_gen_baseline"] = args.epsilon_gen_baseline
-    if args.epsilon_gen_vote is not None:
-        voting_defaults["epsilon_gen_vote"] = args.epsilon_gen_vote
+    if args.epsilon_gen is not None:
+        voting_defaults["epsilon_gen"] = args.epsilon_gen
 
     patch_sweeps(args.best_k_splits, args.best_vote_rounds, args.best_oversample)
 
