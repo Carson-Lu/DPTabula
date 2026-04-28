@@ -1072,8 +1072,7 @@ def main(dataset, undersampled_rate, n_features_arg, mini_batch_size_arg, how_ma
         # (not voting params — generator is reusable across voting configs)
         priv_str = f"eps{arguments.epsilon_gen}" if is_private else "no_priv"
         model_dir = os.path.join(arguments.model_dir, dataset,
-                                 f"epochs{how_many_epochs_arg}_feat{n_features_arg}_{priv_str}",
-                                 f"seed{seed_number}")
+                                 f"epochs{how_many_epochs_arg}_feat{n_features_arg}_{priv_str}")
         os.makedirs(model_dir, exist_ok=True)
         model_file = os.path.join(model_dir, "model.pt")
         aux_file   = os.path.join(model_dir, "aux.npz")
