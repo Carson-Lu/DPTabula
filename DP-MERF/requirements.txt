@@ -8,5 +8,5 @@ matplotlib
 seaborn
 tensorboardX
 backpack-for-pytorch
-autodp
+autodp==0.1
 sdgym

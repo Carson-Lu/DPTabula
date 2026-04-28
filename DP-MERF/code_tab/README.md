@@ -38,7 +38,7 @@ classifiers - a list of methods to test, by default all methods are run.
 
 
 # Step 1 — find best k_splits on adult
-python run_ablations_tabular.py --dataset adult --sweep B
+python run_ablations_tabular.py --dataset adult --sweep B1
 
 # Step 2 — find best vote_rounds
 python run_ablations_tabular.py --dataset adult --sweep A --best_k_splits 25 --baseline
