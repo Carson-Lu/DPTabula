@@ -459,7 +459,7 @@ def main():
         # ---- baseline run ----
         if args.baseline:
             baseline_cmd = [
-                sys.executable, args.gen_script,
+                sys.executable, "-u",args.gen_script,
                 "--dataset",      args.dataset,
                 "--epochs",       ds_fixed["epochs"],
                 "--batch",        str(ds_fixed["batch"]),
@@ -474,10 +474,20 @@ def main():
             baseline_dir = os.path.join(sweep_dir, "baseline_no_vote")
             os.makedirs(baseline_dir, exist_ok=True)
             baseline_log = os.path.join(baseline_dir, "output.log")
-            with open(baseline_log, "w") as f:
-                subprocess.run(baseline_cmd, stdout=f, stderr=subprocess.STDOUT)
-            with open(baseline_log) as f:
-                print(f.read())
+        baseline_log = os.path.join(baseline_dir, "output.log")
+        process = subprocess.Popen(baseline_cmd, stdout=subprocess.PIPE, 
+                                stderr=subprocess.STDOUT, text=True, bufsize=1)
+        with open(baseline_log, "w", encoding="utf-8") as f:
+            try:
+                for line in process.stdout:
+                    f.write(line)
+                    f.flush()
+                    print(line, end="")
+            except KeyboardInterrupt:
+                process.kill()
+                raise
+            finally:
+                process.wait()
             baseline_score = parse_score(baseline_log, args.dataset)
             print(f"  Baseline (no vote) score: {baseline_score}")
 
