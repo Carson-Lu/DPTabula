@@ -158,18 +158,63 @@ SWEEP_F = [
 
 SWEEP_BEST_ADULT = [
     dict(vote_rounds=5, k_splits=25, oversample_factor=0.25, epsilon_gen=0.9, epsilon_vote=0.1,
-         generator_fraction=1.0, num_synth_factor=1.0, epochs=8000, num_features=10000, dataset="adult")
+         generator_fraction=1.0, num_synth_factor=1.0, dataset="adult")
 ]
 
-SWEEP_BEST_ALL = [
+SWEEP_BEST_CENSUS = [
     dict(vote_rounds=5, k_splits=25, oversample_factor=0.25, epsilon_gen=0.9, epsilon_vote=0.1,
-         generator_fraction=1.0, num_synth_factor=1.0, dataset=data)
-    for data in ["adult", "census", "cervical", "credit", "epileptic", "isolet", "covtype", "intrusion"]
+         generator_fraction=1.0, num_synth_factor=1.0, dataset="census")
 ]
 
-SWEEPS      = {"B1": SWEEP_B1, "B5": SWEEP_B5, "B10": SWEEP_B10, "A": SWEEP_A, "C": SWEEP_C, "D": SWEEP_D, "E": SWEEP_E, "F": SWEEP_F, "BEST_ADULT": SWEEP_BEST_ADULT, "BEST_ALL": SWEEP_BEST_ALL}
-SWEEP_ORDER = ["B1", "B5", "B10", "A", "C", "D", "E", "F", "BEST_ADULT", "BEST_ALL"]
+SWEEP_BEST_CERVICAL = [
+    dict(vote_rounds=5, k_splits=25, oversample_factor=0.25, epsilon_gen=0.9, epsilon_vote=0.1,
+         generator_fraction=1.0, num_synth_factor=1.0, dataset="cervical")
+]
 
+SWEEP_BEST_CREDIT = [
+    dict(vote_rounds=5, k_splits=25, oversample_factor=0.25, epsilon_gen=0.9, epsilon_vote=0.1,
+         generator_fraction=1.0, num_synth_factor=1.0, dataset="credit")
+]
+
+SWEEP_BEST_EPILEPTIC = [
+    dict(vote_rounds=5, k_splits=25, oversample_factor=0.25, epsilon_gen=0.9, epsilon_vote=0.1,
+         generator_fraction=1.0, num_synth_factor=1.0, dataset="epileptic")
+]
+
+SWEEP_BEST_ISOLET = [
+    dict(vote_rounds=5, k_splits=25, oversample_factor=0.25, epsilon_gen=0.9, epsilon_vote=0.1,
+         generator_fraction=1.0, num_synth_factor=1.0, dataset="isolet")
+]
+
+SWEEP_BEST_COVTYPE = [
+    dict(vote_rounds=5, k_splits=25, oversample_factor=0.25, epsilon_gen=0.9, epsilon_vote=0.1,
+         generator_fraction=1.0, num_synth_factor=1.0, dataset="covtype")
+]
+
+SWEEP_BEST_INTRUSION = [
+    dict(vote_rounds=5, k_splits=25, oversample_factor=0.25, epsilon_gen=0.9, epsilon_vote=0.1,
+         generator_fraction=1.0, num_synth_factor=1.0, dataset="intrusion")
+]
+
+SWEEPS = {
+    "B1": SWEEP_B1, "B5": SWEEP_B5, "B10": SWEEP_B10,
+    "A": SWEEP_A, "C": SWEEP_C, "D": SWEEP_D, "E": SWEEP_E, "F": SWEEP_F,
+    "BEST_ADULT": SWEEP_BEST_ADULT,
+    "BEST_CENSUS": SWEEP_BEST_CENSUS,
+    "BEST_CERVICAL": SWEEP_BEST_CERVICAL,
+    "BEST_CREDIT": SWEEP_BEST_CREDIT,
+    "BEST_EPILEPTIC": SWEEP_BEST_EPILEPTIC,
+    "BEST_ISOLET": SWEEP_BEST_ISOLET,
+    "BEST_COVTYPE": SWEEP_BEST_COVTYPE,
+    "BEST_INTRUSION": SWEEP_BEST_INTRUSION
+}
+
+SWEEP_ORDER = [
+    "B1", "B5", "B10", "A", "C", "D", "E", "F",
+    "BEST_ADULT", "BEST_CENSUS", "BEST_CERVICAL", "BEST_CREDIT",
+    "BEST_EPILEPTIC", "BEST_ISOLET", "BEST_COVTYPE", "BEST_INTRUSION",
+    "BEST_ALL",
+]
 
 # ------------------------------------------------------------------ #
 #  Helpers                                                            #
