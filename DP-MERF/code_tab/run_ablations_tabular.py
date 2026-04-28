@@ -62,8 +62,8 @@ DATASET_FIXED = {
         classifiers=[0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11],
     ),
     "census": dict(
-        epochs="2000", batch=0.1, undersample=0.4,
-        num_features="10000", repeat=3,
+        epochs="2000", batch=0.05, undersample=0.4,
+        num_features="5000", repeat=3,
         classifiers=[0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11],
     ),
     "cervical": dict(
@@ -72,27 +72,27 @@ DATASET_FIXED = {
         classifiers=[0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11],
     ),
     "credit": dict(
-        epochs="200", batch=0.1, undersample=0.005,
-        num_features="2000", repeat=3,
+        epochs="4000", batch=0.1, undersample=0.005,
+        num_features="5000", repeat=3,
         classifiers=[0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11],
     ),
     "epileptic": dict(
-        epochs="200", batch=0.1, undersample=1.0,
-        num_features="2000", repeat=3,
+        epochs="6000", batch=0.01, undersample=1.0,
+        num_features="80000", repeat=3,
         classifiers=[0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11],
     ),
     "isolet": dict(
-        epochs="200", batch=0.1, undersample=1.0,
-        num_features="2000", repeat=3,
+        epochs="4000", batch=0.1, undersample=1.0,
+        num_features="500", repeat=3,
         classifiers=[0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11],
     ),
     "covtype": dict(
-        epochs="200", batch=0.03, undersample=1.0,
-        num_features="2000", repeat=3,
+        epochs="6000", batch=0.05, undersample=0.03,
+        num_features="1000", repeat=3,
         classifiers=[0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11],
     ),
     "intrusion": dict(
-        epochs="200", batch=0.03, undersample=0.3,
+        epochs="10000", batch=0.03, undersample=0.3,
         num_features="2000", repeat=3,
         classifiers=[0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11],
     ),
@@ -151,18 +151,24 @@ SWEEP_E = [
 
 # ---- Sweep F: epsilon distribution ----
 SWEEP_F = [
-    dict(vote_rounds=5, k_splits=25, oversample_factor=0.5, generator_fraction=1.0,
+    dict(vote_rounds=5, k_splits=25, oversample_factor=0.25, generator_fraction=1.0,
          epsilon_gen=eg, epsilon_vote=round(1.0 - eg, 2))
     for eg in [0.1, 0.25, 0.5, 0.75, 0.9]
 ]
 
 SWEEP_BEST_ADULT = [
-    dict(vote_rounds=5, k_splits=25, oversample_factor=0.25,
+    dict(vote_rounds=5, k_splits=25, oversample_factor=0.25, epsilon_gen=0.9, epsilon_vote=0.1,
          generator_fraction=1.0, num_synth_factor=1.0, epochs=8000, num_features=10000, dataset="adult")
 ]
 
-SWEEPS      = {"B1": SWEEP_B1, "B5": SWEEP_B5, "B10": SWEEP_B10, "A": SWEEP_A, "C": SWEEP_C, "D": SWEEP_D, "E": SWEEP_E, "F": SWEEP_F, "BEST_ADULT": SWEEP_BEST_ADULT}
-SWEEP_ORDER = ["B1", "B5", "B10", "A", "C", "D", "E", "F", "BEST_ADULT"]
+SWEEP_BEST_ALL = [
+    dict(vote_rounds=5, k_splits=25, oversample_factor=0.25, epsilon_gen=0.9, epsilon_vote=0.1,
+         generator_fraction=1.0, num_synth_factor=1.0, dataset=data)
+    for data in ["adult", "census", "cervical", "credit", "epileptic", "isolet", "covtype", "intrusion"]
+]
+
+SWEEPS      = {"B1": SWEEP_B1, "B5": SWEEP_B5, "B10": SWEEP_B10, "A": SWEEP_A, "C": SWEEP_C, "D": SWEEP_D, "E": SWEEP_E, "F": SWEEP_F, "BEST_ADULT": SWEEP_BEST_ADULT, "BEST_ALL": SWEEP_BEST_ALL}
+SWEEP_ORDER = ["B1", "B5", "B10", "A", "C", "D", "E", "F", "BEST_ADULT", "BEST_ALL"]
 
 
 # ------------------------------------------------------------------ #
@@ -193,9 +199,12 @@ def run_one(cfg, dataset, voting_defaults, base_log_dir,
     os.makedirs(log_dir, exist_ok=True)
 
     ds_fixed = DATASET_FIXED[dataset]
+    epsilon_vote = cfg.get("epsilon_vote", voting_defaults["epsilon_vote"])
+    epsilon_gen = cfg.get("epsilon_gen", voting_defaults["epsilon_gen"])
+    num_synth_factor = cfg.get("num_synth_factor", voting_defaults["num_synth_factor"])
 
     cmd = [
-        sys.executable, gen_script,
+        sys.executable, "-u", gen_script,
         "--dataset",            dataset,
         "--epochs",             ds_fixed["epochs"],
         "--batch",              str(ds_fixed["batch"]),
@@ -203,15 +212,14 @@ def run_one(cfg, dataset, voting_defaults, base_log_dir,
         "--num_features",       ds_fixed["num_features"],
         "--repeat",             str(ds_fixed["repeat"]),
         "--classifiers",        *[str(c) for c in ds_fixed["classifiers"]],
-        "--epsilon_vote",       str(voting_defaults["epsilon_vote"]),
-        "--num_synth_factor",   str(cfg.get("num_synth_factor",
-                                            voting_defaults["num_synth_factor"])),
+        "--epsilon_vote",       str(epsilon_vote),
+        "--num_synth_factor",   str(num_synth_factor),
         "--vote_rounds",        str(cfg["vote_rounds"]),
         "--k_splits",           str(cfg["k_splits"]),
         "--oversample_factor",  str(cfg["oversample_factor"]),
         "--generator_fraction", str(cfg["generator_fraction"]),
         "--private",      "1",
-        "--epsilon_gen",  str(voting_defaults["epsilon_gen"]),
+        "--epsilon_gen",  str(epsilon_gen),
     ]
 
     print("\n" + "="*70)
@@ -219,16 +227,25 @@ def run_one(cfg, dataset, voting_defaults, base_log_dir,
     print("  " + " ".join(cmd))
     print("="*70)
 
-    # Redirect stdout to a log file so we can parse results afterward
+    # Redirect stdout to a log file and stream to console so progress is visible
     log_file = os.path.join(log_dir, "output.log")
-    with open(log_file, "w") as f:
-        result = subprocess.run(cmd, stdout=f, stderr=subprocess.STDOUT)
+    # Launch child unbuffered (we added -u) and stream stdout line-by-line
+    process = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1)
+    rc = None
+    with open(log_file, "w", encoding="utf-8") as f:
+        try:
+            for line in process.stdout:
+                f.write(line)
+                f.flush()
+                print(line, end="")
+        except KeyboardInterrupt:
+            process.kill()
+            raise
+        finally:
+            process.wait()
+            rc = process.returncode
 
-    # Also print to console
-    with open(log_file) as f:
-        print(f.read())
-
-    return log_dir, log_file, result.returncode
+    return log_dir, log_file, rc
 
 
 def parse_score(log_file, dataset):

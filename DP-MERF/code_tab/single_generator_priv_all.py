@@ -1195,6 +1195,7 @@ def main(dataset, undersampled_rate, n_features_arg, mini_batch_size_arg, how_ma
                 generated_labels_final = label_input.cpu().detach().numpy()
 
             else:
+                print("STARTING TO VOTE FOR HETEROGENEOUS DATA")
                 num_col_indices = list(range(num_numerical_inputs))
                 cat_col_indices = list(range(num_numerical_inputs, input_dim))
                 columns, info   = build_columns_info(X_train, num_col_indices, cat_col_indices)
@@ -1259,6 +1260,7 @@ def main(dataset, undersampled_rate, n_features_arg, mini_batch_size_arg, how_ma
                 generated_labels = np.argmax(generated_labels_final, axis=1)
 
             else:
+                print("STARTING TO VOTE FOR HOMOGENEOUS DATA")
                 num_col_indices = list(range(input_dim))
                 cat_col_indices = []
                 columns, info   = build_columns_info(X_train, num_col_indices, cat_col_indices)
