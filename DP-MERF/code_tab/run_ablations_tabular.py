@@ -495,17 +495,18 @@ def main():
 
     for sweep_name in sweeps_to_run:
         configs   = SWEEPS[sweep_name]
-        sweep_dir = os.path.join(args.base_log_dir, args.dataset, f"sweep_{sweep_name}")
+        sweep_dataset = next((cfg.get("dataset") for cfg in configs if cfg.get("dataset")), args.dataset)
+        sweep_dir = os.path.join(args.base_log_dir, sweep_dataset, f"sweep_{sweep_name}")
         os.makedirs(sweep_dir, exist_ok=True)
 
         log_dirs, all_scores = [], []   # initialise first
         
-        ds_fixed = DATASET_FIXED[args.dataset]  # add this line
+        ds_fixed = DATASET_FIXED[sweep_dataset]  # add this line
         # ---- baseline run ----
         if args.baseline:
             baseline_cmd = [
                 sys.executable, "-u",args.gen_script,
-                "--dataset",      args.dataset,
+                "--dataset",      sweep_dataset,
                 "--epochs",       ds_fixed["epochs"],
                 "--batch",        str(ds_fixed["batch"]),
                 "--undersample",  str(ds_fixed["undersample"]),
@@ -519,47 +520,52 @@ def main():
             baseline_dir = os.path.join(sweep_dir, "baseline_no_vote")
             os.makedirs(baseline_dir, exist_ok=True)
             baseline_log = os.path.join(baseline_dir, "output.log")
-        baseline_log = os.path.join(baseline_dir, "output.log")
-        process = subprocess.Popen(baseline_cmd, stdout=subprocess.PIPE, 
-                                stderr=subprocess.STDOUT, text=True, bufsize=1)
-        with open(baseline_log, "w", encoding="utf-8") as f:
-            try:
-                for line in process.stdout:
-                    f.write(line)
-                    f.flush()
-                    print(line, end="")
-            except KeyboardInterrupt:
-                process.kill()
-                raise
-            finally:
-                process.wait()
-            baseline_score = parse_score(baseline_log, args.dataset)
-            print(f"  Baseline (no vote) score: {baseline_score}")
+            process = subprocess.Popen(baseline_cmd, stdout=subprocess.PIPE, 
+                                    stderr=subprocess.STDOUT, text=True, bufsize=1)
+            with open(baseline_log, "w", encoding="utf-8") as f:
+                try:
+                    for line in process.stdout:
+                        f.write(line)
+                        f.flush()
+                        print(line, end="")
+                except KeyboardInterrupt:
+                    process.kill()
+                    raise
+                finally:
+                    process.wait()
+                baseline_score = parse_score(baseline_log, sweep_dataset)
+                print(f"  Baseline (no vote) score: {baseline_score}")
 
-            baseline_cfg = dict(vote_rounds=1, k_splits=1, oversample_factor=0.5,
-                            generator_fraction=1.0, _label="baseline")
-            configs    = [baseline_cfg] + list(configs)
-            log_dirs   = [baseline_dir]
-            all_scores = [baseline_score]
+                baseline_cfg = dict(vote_rounds=1, k_splits=1, oversample_factor=0.5,
+                                generator_fraction=1.0, _label="baseline")
+                configs    = [baseline_cfg] + list(configs)
+                log_dirs   = [baseline_dir]
+                all_scores = [baseline_score]
 
         start_idx = 1 if args.baseline else 0
         if args.baseline_only:
             start_idx = len(configs)
 
         for cfg in configs[start_idx:]:
+            run_dataset = cfg.get("dataset", sweep_dataset)
+            if run_dataset != sweep_dataset:
+                raise ValueError(
+                    f"Sweep {sweep_name} mixes datasets ({sweep_dataset} vs {run_dataset}). "
+                    "Split it into separate sweeps so checkpoint paths stay consistent."
+                )
             log_dir, log_file, rc = run_one(
-                cfg, args.dataset, voting_defaults, sweep_dir, args.gen_script)
+                cfg, sweep_dataset, voting_defaults, sweep_dir, args.gen_script)
             log_dirs.append(log_dir)
-            scores = parse_score(log_file, args.dataset)
+            scores = parse_score(log_file, sweep_dataset)
             all_scores.append(scores)
             if scores:
                 print(f"  -> primary score: {scores['primary']:.4f}")
             else:
                 print(f"  -> score: None")
 
-        print_summary(sweep_name, args.dataset, configs, all_scores)
-        plot_sweep_bar(sweep_name, args.dataset, configs, all_scores, sweep_dir)
-        plot_roc_prc_bars(sweep_name, args.dataset, configs, all_scores, sweep_dir)
+        print_summary(sweep_name, sweep_dataset, configs, all_scores)
+        plot_sweep_bar(sweep_name, sweep_dataset, configs, all_scores, sweep_dir)
+        plot_roc_prc_bars(sweep_name, sweep_dataset, configs, all_scores, sweep_dir)
 
         summary = [{"config": config_label(c), "scores": s}
                    for c, s in zip(configs, all_scores)]

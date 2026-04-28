@@ -69,14 +69,24 @@ def build_columns_info(X, numerical_col_indices, categorical_col_indices):
     info = {}
     for j, col_idx in enumerate(numerical_col_indices):
         c = num_names[j]
-        info[c] = {
-            "min": float(X[:, col_idx].min()),
-            "max": float(X[:, col_idx].max()),
-        }
+        col_min = float(X[:, col_idx].min())
+        col_max = float(X[:, col_idx].max())
+        if col_min == col_max:
+            print(f"WARNING: column {col_idx} is constant (value={col_min}). "
+                f"It will contribute nothing to voting.")
+        info[c] = {"min": col_min, "max": col_max}
     for j, col_idx in enumerate(categorical_col_indices):
         c = cat_names[j]
         unique_vals = np.unique(X[:, col_idx])
-        info[c] = {v: i for i, v in enumerate(unique_vals)}
+        # store as floats when possible, but keep the original value if a cast fails
+        # so that mixed/object columns can still be embedded.
+        info[c] = {}
+        for i, v in enumerate(unique_vals):
+            try:
+                key = float(v)
+            except Exception:
+                key = v
+            info[c][key] = i
 
     return columns, info
 
@@ -105,10 +115,32 @@ def get_vector(s, columns, info):
     vector = []
     for i, c in enumerate(columns["numerical"] + columns["categorical"]):
         if c in columns["numerical"]:
-            vector.append((s[i] - info[c]['min']) / (info[c]['max'] - info[c]['min']))
+            denom = info[c]['max'] - info[c]['min']
+            if denom == 0:
+                vector.append(0.0)
+            else:
+                vector.append((s[i] - info[c]['min']) / denom)
         else:
             vector_add = [0.0] * len(info[c])
-            vector_add[info[c][s[i]]] = 1.0 / 3.0
+            raw_value = s[i]
+
+            # Prefer exact matching, but gracefully fall back to the nearest known
+            # category when the generator produces a slightly out-of-support value
+            # such as 1.0 for a binary column or 2.0 for a 0/1/2 ordinal column.
+            candidate_keys = list(info[c].keys())
+            key = raw_value
+            if key not in info[c]:
+                try:
+                    numeric_value = float(raw_value)
+                    numeric_keys = [k for k in candidate_keys if isinstance(k, (int, float, np.integer, np.floating))]
+                    if numeric_keys:
+                        key = min(numeric_keys, key=lambda k: abs(float(k) - numeric_value))
+                    else:
+                        key = min(candidate_keys, key=lambda k: abs(float(k) - numeric_value))
+                except Exception:
+                    key = candidate_keys[0]
+
+            vector_add[info[c][key]] = 1.0 / 3.0
             vector += vector_add
     return vector
 
