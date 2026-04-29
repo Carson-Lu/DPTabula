@@ -139,7 +139,7 @@ def get_args():
 	parser.add_argument("--k_splits", type=int, default=1, help="number of independent voting runs to union")
 	parser.add_argument("--num_synth_factor", type=float, default=1, help="proportion of synthetic data to generate, relative to original")
 	parser.add_argument("--epsilon_vote", type=float, default=1.0)
-	parser.add_argument("--model_path", type=str, default="pt_models/epsilon_1.0/gen.pt")
+	parser.add_argument("--model_path", type=str, default="pt_models/epsilon_1.0/gen.pt") #"pt_models/epsilon_1.0/gen.pt"
 	parser.add_argument("--generator_fraction", type=float, default=1.0,
 						help="fraction of candidate pool from DP-MERF generator. "
 							 "Remainder (1 - generator_fraction) comes from random sampling.")
@@ -282,31 +282,31 @@ def main():
 		use_sigmoid = ar.data in {"digits", "fashion"}
 		gen = FCCondGen(ar.d_code, ar.gen_spec, data_pkg.n_features, data_pkg.n_labels, use_sigmoid=use_sigmoid, batch_norm=True).to(device)
 
-	if os.path.isfile(ar.model_pt_path):
-		print("Existing model found, loading...")
-		gen.load_state_dict(pt.load(ar.model_pt_path, map_location=device))
-	else:
-		print("No existing model found, training from scratch...")
-		minibatch_loss, single_release_loss = get_losses(ar, data_pkg.train_loader, device, data_pkg.n_features, data_pkg.n_labels)
-		# init optimizer
-		optimizer = pt.optim.Adam(list(gen.parameters()), lr=ar.lr)
-		scheduler = StepLR(optimizer, step_size=1, gamma=ar.lr_decay)
+	# if os.path.isfile(ar.model_pt_path):
+	# 	print("Existing model found, loading...")
+	# 	gen.load_state_dict(pt.load(ar.model_pt_path, map_location=device))
+	# else:
+	print("No existing model found, training from scratch...")
+	minibatch_loss, single_release_loss = get_losses(ar, data_pkg.train_loader, device, data_pkg.n_features, data_pkg.n_labels)
+	# init optimizer
+	optimizer = pt.optim.Adam(list(gen.parameters()), lr=ar.lr)
+	scheduler = StepLR(optimizer, step_size=1, gamma=ar.lr_decay)
 
-		# training loop
-		for epoch in range(1, ar.epochs + 1):
-			if ar.single_release:
-				train_single_release(gen, device, optimizer, epoch, single_release_loss, ar.log_interval, ar.batch_size, data_pkg.n_data)
-			else:
-				train_multi_release(gen, device, data_pkg.train_loader, optimizer, epoch, minibatch_loss, ar.log_interval)
+	# training loop
+	for epoch in range(1, ar.epochs + 1):
+		if ar.single_release:
+			train_single_release(gen, device, optimizer, epoch, single_release_loss, ar.log_interval, ar.batch_size, data_pkg.n_data)
+		else:
+			train_multi_release(gen, device, data_pkg.train_loader, optimizer, epoch, minibatch_loss, ar.log_interval)
 
-			# testing doesn't really inform how training is going, so it's commented out
-			# test(gen, device, test_loader, rff_mmd_loss, epoch, ar.batch_size, ar.log_dir)
-			if ar.data in {"digits", "fashion"}:
-				log_gen_data(gen, device, epoch, data_pkg.n_labels, ar.log_dir)
-			scheduler.step()
+		# testing doesn't really inform how training is going, so it's commented out
+		# test(gen, device, test_loader, rff_mmd_loss, epoch, ar.batch_size, ar.log_dir)
+		if ar.data in {"digits", "fashion"}:
+			log_gen_data(gen, device, epoch, data_pkg.n_labels, ar.log_dir)
+		scheduler.step()
 
-		# save trained model and data
-		pt.save(gen.state_dict(), ar.model_pt_path)
+	# save trained model and data
+	pt.save(gen.state_dict(), ar.model_pt_path)
 
 	if ar.create_dataset:
 		data_id = "synthetic_mnist" if ar.data in {"digits", "fashion"} else "gen_data"

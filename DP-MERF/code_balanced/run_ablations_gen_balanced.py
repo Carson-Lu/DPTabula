@@ -50,7 +50,7 @@ FIXED = dict(
     rff_sigma="0.50",
     lr="3e-3",
     d_rff=30000,
-    model_path="pt_models/epsilon_1.0/gen.pt",
+    model_path=None,
     epsilon_vote=1.0,
     num_synth_factor=1.0,
     seed=42,
@@ -108,28 +108,23 @@ SWEEP_D = [
 # Use best k_splits from B (default 2).
 # Tests whether generating less data improves voting quality.
 SWEEP_E = [
-    dict(vote_rounds=1, k_splits=2, oversample_factor=0.5,
+    dict(vote_rounds=5, k_splits=50, oversample_factor=0.5,
          generator_fraction=1.0, num_synth_factor=nsf)
     for nsf in [0.25, 0.5, 0.75, 1.0, 1.5, 2.0]
 ]
 
-# ---- Sweep F: k_splits x vote_rounds x num_synth_factor interaction ----
-# All generator. Tests the joint effect of splits, rounds, and dataset size.
-# k_splits=1 excluded since sweep B already showed it underperforms.
+delta = 1e-5
+# ---- Sweep F: epsilon distribution ----
+# Tests epsilon allocation between voting and generation.
+# epsilon_vote + epsilon_gen = 1.0
 SWEEP_F = [
-    dict(vote_rounds=vr, k_splits=ks, oversample_factor=0.5,
-         generator_fraction=1.0, num_synth_factor=nsf)
-    for vr, ks, nsf in [
-        (1, 2, 1.0),    # 2 splits, 1 round, full dataset — baseline
-        (1, 4, 1.0),    # 4 splits, 1 round, full dataset
-        (1, 2, 0.5),    # 2 splits, 1 round, half dataset
-        (1, 4, 0.5),    # 4 splits, 1 round, half dataset
-        (2, 2, 1.0),    # 2 splits, 2 rounds, full dataset
-        (2, 4, 1.0),    # 4 splits, 2 rounds, full dataset
-        (2, 2, 0.5),    # 2 splits, 2 rounds, half dataset
-        (2, 4, 0.5),    # 4 splits, 2 rounds, half dataset
-    ]
+    dict(vote_rounds=5, k_splits=50, oversample_factor=0.5, generator_fraction=1.0,
+         epsilon_vote=ev, noise_factor=np.sqrt(2 * np.log(1.25 / 10**(-5))) / round(1.0 - ev, 2))
+    for ev in [0.1, 0.25, 0.5, 0.75, 0.9]
 ]
+
+EG = 0.5
+EV = 0.5
 
 SWEEPS = {"B1": SWEEP_B1, "B5": SWEEP_B5, "B10": SWEEP_B10,
           "A": SWEEP_A, "C": SWEEP_C,
@@ -151,6 +146,8 @@ def config_label(cfg):
     )
     if cfg.get("num_synth_factor", 1.0) != 1.0:
         label += f"_nsf{cfg['num_synth_factor']}"
+    if "noise_factor" in cfg:
+        label += f"_nf{cfg['noise_factor']:.2f}"
     return label
 
 
@@ -159,25 +156,29 @@ def run_one(cfg, fixed, base_log_dir, gen_script="gen_balanced.py"):
     label   = config_label(cfg)
     log_dir = os.path.join(base_log_dir, label) + "/"
 
+    # Get param values from config with fallback to fixed defaults
+    epsilon_vote = cfg.get("epsilon_vote", fixed["epsilon_vote"])
+    noise_factor = cfg.get("noise_factor", fixed["noise_factor"])
+    num_synth_factor = cfg.get("num_synth_factor", fixed["num_synth_factor"])
+
     cmd = [
         sys.executable, gen_script,
         "--data",               fixed["data"],
         "--log-dir",            log_dir,
-        "--model_path",         fixed["model_path"],
         "--gen-spec",           fixed["gen_spec"],
         "--synth-spec-string",  fixed["synth_spec_string"],
         "--rff-sigma",          fixed["rff_sigma"],
         "--lr",                 fixed["lr"],
         "--d-rff",              str(fixed["d_rff"]),
-        "--noise-factor",       str(fixed["noise_factor"]),
+        "--noise-factor",       str(noise_factor),
         "--epochs",             str(fixed["epochs"]),
-        "--epsilon_vote",       str(fixed["epsilon_vote"]),
-        "--num_synth_factor",   str(cfg.get("num_synth_factor", fixed["num_synth_factor"])),
+        "--epsilon_vote",       str(epsilon_vote),
+        "--num_synth_factor",   str(num_synth_factor),
         "--seed",               str(fixed["seed"]),
         "--vote_rounds",        str(cfg["vote_rounds"]),
         "--k_splits",           str(cfg["k_splits"]),
         "--oversample_factor",  str(cfg["oversample_factor"]),
-        "--generator_fraction", str(cfg["generator_fraction"]),
+        "--generator_fraction", str(cfg["generator_fraction"])
     ]
 
     print("\n" + "="*70)
@@ -360,6 +361,7 @@ def main():
         if val is not None:
             fixed[key] = val
 
+
     # Patch sweeps with best results from earlier sweeps
     patch_sweeps(args.best_k_splits, args.best_vote_rounds,
                  args.best_oversample, args.best_num_synth)
@@ -383,7 +385,6 @@ def main():
                 sys.executable, args.gen_script,
                 "--data",               fixed["data"],
                 "--log-dir",            baseline_dir,
-                "--model_path",         fixed["model_path"],
                 "--gen-spec",           fixed["gen_spec"],
                 "--synth-spec-string",  fixed["synth_spec_string"],
                 "--rff-sigma",          fixed["rff_sigma"],
@@ -391,6 +392,7 @@ def main():
                 "--d-rff",              str(fixed["d_rff"]),
                 "--noise-factor",       str(fixed["noise_factor"]),
                 "--epochs",             str(fixed["epochs"]),
+                "--epsilon_vote",       str(fixed["epsilon_vote"]),
                 "--seed",               str(fixed["seed"]),
                 "--skip_vote",
             ]
