@@ -310,24 +310,25 @@ def preprocess_sdgym_single_table(data_df, metadata, table_name=None, binary_lab
 ######################################## voting helpers ############################################################################
 
 def generator_fn_heterogeneous(model, n, label, weights, input_size, num_numerical_inputs, device):
-    """Generate n samples for a given label from the heterogeneous generator."""
-    label_input = torch.full((n, 1), label, dtype=torch.float).to(device)
-    feature_input = torch.randn((n, input_size - 1)).to(device)
-    outputs = model(torch.cat((feature_input, label_input), 1))
-    output_numerical   = outputs[:, 0:num_numerical_inputs]
-    output_categorical = torch.round(outputs[:, num_numerical_inputs:])
-    result = torch.cat((output_numerical, output_categorical), 1).cpu().detach().numpy()
+    model.eval()
+    with torch.no_grad():
+        label_input = torch.full((n, 1), label, dtype=torch.float).to(device)
+        feature_input = torch.randn((n, input_size - 1)).to(device)
+        outputs = model(torch.cat((feature_input, label_input), 1))
+        output_numerical   = outputs[:, 0:num_numerical_inputs]
+        output_categorical = torch.round(outputs[:, num_numerical_inputs:])
+        result = torch.cat((output_numerical, output_categorical), 1).cpu().detach().numpy()
     return features_to_samples(result, list(range(num_numerical_inputs)),
                                list(range(num_numerical_inputs, result.shape[1])))
 
 
 def generator_fn_homogeneous(model, n, label, weights, input_size, device):
-    """Generate n samples for a given label from the homogeneous generator."""
-    label_input = torch.full((n,), float(label)).to(device)
-    feature_input = torch.randn((n, input_size - 1)).to(device)
-    result = model(torch.cat((feature_input, label_input[:, None]), 1)).cpu().detach().numpy()
+    model.eval()
+    with torch.no_grad():
+        label_input = torch.full((n,), float(label)).to(device)
+        feature_input = torch.randn((n, input_size - 1)).to(device)
+        result = model(torch.cat((feature_input, label_input[:, None]), 1)).cpu().detach().numpy()
     return features_to_samples(result, list(range(result.shape[1])), [])
-
 
 ######################################## beginning of main script ############################################################################
 
@@ -405,13 +406,13 @@ def main(dataset, undersampled_rate, n_features_arg, mini_batch_size_arg, how_ma
     elif dataset=="credit":
 
         print("Creditcard fraud detection dataset") # this is homogeneous
-
-        if 'g0' not in socket.gethostname() and 'p0' not in socket.gethostname():
-            data = pd.read_csv("../data/Kaggle_Credit/creditcard.csv")
-        else:
-            # (1) load data
-            data = pd.read_csv(
-                '/home/user/Dropbox_from/Current_research/privacy/DPDR/data/Kaggle_Credit/creditcard.csv')
+        data = pd.read_csv('C:\\Users\\Carson\\Desktop\\DPTabula\\DP-MERF\\code_tab\\datasets\\creditcard.csv')
+        # if 'g0' not in socket.gethostname() and 'p0' not in socket.gethostname():
+        #     data = pd.read_csv("../data/Kaggle_Credit/creditcard.csv")
+        # else:
+        #     # (1) load data
+        #     data = pd.read_csv(
+        #         'C:\\Users\\Carson\\Desktop\\DPTabula\\DP-MERF\\code_tab\\datasets\\creditcard.csv')
 
         feature_names = data.iloc[:, 1:30].columns
         target = data.iloc[:, 30:].columns
@@ -687,9 +688,14 @@ def main(dataset, undersampled_rate, n_features_arg, mini_batch_size_arg, how_ma
     elif dataset=='intrusion':
 
         print("dataset is", dataset)
+        # print(socket.gethostname())
+        # data_df, metadata = load_dataset(modality='single_table', dataset='intrusion')
+        # data, _, _ = preprocess_sdgym_single_table(data_df, metadata)
         print(socket.gethostname())
+        #if 'g0' not in socket.gethostname():
         data_df, metadata = load_dataset(modality='single_table', dataset='intrusion')
-        data, _, _ = preprocess_sdgym_single_table(data_df, metadata)
+        data, categorical_columns, ordinal_columns = preprocess_sdgym_single_table(data_df, metadata)
+
 
         """ some specifics on this dataset """
         n_classes = 5
@@ -732,9 +738,14 @@ def main(dataset, undersampled_rate, n_features_arg, mini_batch_size_arg, how_ma
     elif dataset=='covtype':
 
         print("dataset is", dataset)
+        # print(socket.gethostname())
+        # data_df, metadata = load_dataset(modality='single_table', dataset='covtype')
+        # data, _, _ = preprocess_sdgym_single_table(data_df, metadata)
+
         print(socket.gethostname())
+        #if 'g0' not in socket.gethostname():
         data_df, metadata = load_dataset(modality='single_table', dataset='covtype')
-        data, _, _ = preprocess_sdgym_single_table(data_df, metadata)
+        data, categorical_columns, ordinal_columns = preprocess_sdgym_single_table(data_df, metadata)
 
         """ some specifics on this dataset """
         numerical_columns = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]
